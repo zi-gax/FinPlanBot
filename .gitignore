@@ -3,3 +3,4 @@ venv
 main.txt
 config.py
 finplan.db
+.vscode/
