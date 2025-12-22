@@ -1394,7 +1394,7 @@ async def main():
         try:
             logging.info(f"Starting bot polling (attempt {attempt + 1}/{max_retries})...")
             # Run polling as a task so we can cancel it on Ctrl+C / signals
-            polling_task = asyncio.create_task(dp.start_polling(bot, handle_as_tasks=False))
+            polling_task = asyncio.create_task(dp.start_polling(bot, handle_as_tasks=True))
 
             # Wait until either polling finishes or a stop signal is received
             done, pending = await asyncio.wait(
