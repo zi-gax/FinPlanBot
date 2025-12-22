@@ -171,3 +171,94 @@ class Database:
         """Removes all plans (planning data) for a specific user."""
         self.cursor.execute("DELETE FROM plans WHERE user_id = ?", (user_id,))
         self.conn.commit()
+
+    # Admin operations
+    def get_all_users(self):
+        """Get all users with their basic information."""
+        self.cursor.execute("""
+            SELECT user_id, username, full_name, language, created_at
+            FROM users
+            ORDER BY created_at DESC
+        """)
+        return self.cursor.fetchall()
+
+    def get_user_stats(self):
+        """Get overall statistics for all users."""
+        # Total users
+        self.cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = self.cursor.fetchone()[0]
+
+        # Users by language
+        self.cursor.execute("SELECT language, COUNT(*) FROM users GROUP BY language")
+        language_stats = dict(self.cursor.fetchall())
+
+        # Total transactions
+        self.cursor.execute("SELECT COUNT(*) FROM transactions")
+        total_transactions = self.cursor.fetchone()[0]
+
+        # Total plans
+        self.cursor.execute("SELECT COUNT(*) FROM plans")
+        total_plans = self.cursor.fetchone()[0]
+
+        # Total categories
+        self.cursor.execute("SELECT COUNT(*) FROM categories")
+        total_categories = self.cursor.fetchone()[0]
+
+        # Active users (users with transactions or plans in last 30 days)
+        self.cursor.execute("""
+            SELECT COUNT(DISTINCT user_id) FROM (
+                SELECT user_id FROM transactions
+                WHERE date >= date('now', '-30 days')
+                UNION
+                SELECT user_id FROM plans
+                WHERE date >= date('now', '-30 days')
+            )
+        """)
+        active_users = self.cursor.fetchone()[0]
+
+        return {
+            'total_users': total_users,
+            'active_users': active_users,
+            'language_stats': language_stats,
+            'total_transactions': total_transactions,
+            'total_plans': total_plans,
+            'total_categories': total_categories
+        }
+
+    def get_user_detailed_stats(self, user_id):
+        """Get detailed statistics for a specific user."""
+        # User basic info
+        self.cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        user_info = self.cursor.fetchone()
+
+        if not user_info:
+            return None
+
+        # Transaction counts by type
+        self.cursor.execute("""
+            SELECT type, COUNT(*), SUM(amount)
+            FROM transactions
+            WHERE user_id = ?
+            GROUP BY type
+        """, (user_id,))
+        transaction_stats = dict((row[0], {'count': row[1], 'total': row[2]}) for row in self.cursor.fetchall())
+
+        # Plan statistics
+        self.cursor.execute("SELECT COUNT(*), COUNT(CASE WHEN is_done = 1 THEN 1 END) FROM plans WHERE user_id = ?", (user_id,))
+        plan_row = self.cursor.fetchone()
+        plan_stats = {
+            'total': plan_row[0],
+            'completed': plan_row[1],
+            'pending': plan_row[0] - plan_row[1]
+        }
+
+        # Category counts
+        self.cursor.execute("SELECT type, COUNT(*) FROM categories WHERE user_id = ? GROUP BY type", (user_id,))
+        category_stats = dict(self.cursor.fetchall())
+
+        return {
+            'user_info': user_info,
+            'transaction_stats': transaction_stats,
+            'plan_stats': plan_stats,
+            'category_stats': category_stats
+        }

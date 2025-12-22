@@ -26,6 +26,11 @@ def get_user_lang(event):
         return 'fa'
     return db.get_user_language(user.id)
 
+# Helper to check if user is admin
+def is_admin(user_id):
+    """Check if user is an admin."""
+    return user_id in ADMIN_IDS
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
@@ -51,8 +56,8 @@ class CategoryStates(StatesGroup):
     waiting_for_category_name = State()
 
 # Keyboards
-def main_menu_kb(lang='fa'):
-    """Generate main menu keyboard based on language."""
+def main_menu_kb(lang='fa', is_admin=False):
+    """Generate main menu keyboard based on language and admin status."""
     if lang == 'en':
         buttons = [
             [InlineKeyboardButton(text="💰 Financial Management", callback_data="finance_main")],
@@ -60,13 +65,17 @@ def main_menu_kb(lang='fa'):
             [InlineKeyboardButton(text="ℹ️ Help", callback_data="help")],
             [InlineKeyboardButton(text="⚙️ Settings", callback_data="settings")]
         ]
+        if is_admin:
+            buttons.append([InlineKeyboardButton(text="👑 Admin Panel", callback_data="admin_panel")])
     else:  # Persian (fa)
         buttons = [
             [InlineKeyboardButton(text="💰 مدیریت مالی", callback_data="finance_main")],
             [InlineKeyboardButton(text="📅 برنامه‌ریزی", callback_data="plan_main")],
-            [InlineKeyboardButton(text="ℹ️ راهنما", callback_data="help")],
+            [InlineKeyboardButton(text="💡 راهنما", callback_data="help")],
             [InlineKeyboardButton(text="⚙️ تنظیمات", callback_data="settings")]
         ]
+        if is_admin:
+            buttons.append([InlineKeyboardButton(text="👑 پنل مدیریت", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def finance_menu_kb(lang='fa'):
@@ -105,6 +114,22 @@ def planning_menu_kb(lang='fa'):
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def admin_menu_kb(lang='fa'):
+    """Generate admin panel menu keyboard based on language."""
+    if lang == 'en':
+        buttons = [
+            [InlineKeyboardButton(text="👥 User List", callback_data="admin_users")],
+            [InlineKeyboardButton(text="📊 Statistics", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+        ]
+    else:
+        buttons = [
+            [InlineKeyboardButton(text="👥 لیست کاربران", callback_data="admin_users")],
+            [InlineKeyboardButton(text="📊 آمار", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # Translation helper is now imported from translations.py
 
 # Handlers
@@ -112,23 +137,25 @@ def planning_menu_kb(lang='fa'):
 async def start_cmd(message: types.Message):
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
     lang = db.get_user_language(message.from_user.id)
+    admin_status = is_admin(message.from_user.id)
     await message.answer(
         get_text('welcome', lang),
-        reply_markup=main_menu_kb(lang)
+        reply_markup=main_menu_kb(lang, admin_status)
     )
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: types.CallbackQuery):
     lang = db.get_user_language(callback.from_user.id)
+    admin_status = is_admin(callback.from_user.id)
     text = get_text('welcome', lang).split('\n')[1] if '\n' in get_text('welcome', lang) else "بخش مورد نظر را انتخاب کنید:"
-    await safe_edit_text(callback, text, reply_markup=main_menu_kb(lang))
+    await safe_edit_text(callback, text, reply_markup=main_menu_kb(lang, admin_status))
     await callback.answer()
 
 @dp.callback_query(F.data == "settings")
 async def settings_menu(callback: types.CallbackQuery):
     """Show settings menu."""
     lang = db.get_user_language(callback.from_user.id)
-    
+
     if lang == 'en':
         text = "⚙️ Settings\n\nSelect an option:"
         buttons = [
@@ -143,7 +170,166 @@ async def settings_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
         ]
-    
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel(callback: types.CallbackQuery):
+    """Show admin panel menu."""
+    # Check if user is admin
+    if not is_admin(callback.from_user.id):
+        lang = db.get_user_language(callback.from_user.id)
+        await callback.answer(get_text('access_denied', lang) if lang == 'en' else "دسترسی غیرمجاز", show_alert=True)
+        return
+
+    lang = db.get_user_language(callback.from_user.id)
+
+    if lang == 'en':
+        text = "👑 Admin Panel\n\nWelcome to the admin panel. Choose an option:"
+    else:
+        text = "👑 پنل مدیریت\n\nبه پنل مدیریت خوش آمدید. گزینه مورد نظر را انتخاب کنید:"
+
+    await safe_edit_text(callback, text, reply_markup=admin_menu_kb(lang))
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(callback: types.CallbackQuery):
+    """Show list of all users."""
+    # Check if user is admin
+    if not is_admin(callback.from_user.id):
+        lang = db.get_user_language(callback.from_user.id)
+        await callback.answer(get_text('access_denied', lang) if lang == 'en' else "دسترسی غیرمجاز", show_alert=True)
+        return
+
+    lang = db.get_user_language(callback.from_user.id)
+    users = db.get_all_users()
+
+    if not users:
+        text = "👥 لیست کاربران\n\nهیچ کاربری یافت نشد." if lang == 'fa' else "👥 User List\n\nNo users found."
+        await safe_edit_text(callback, text, reply_markup=admin_menu_kb(lang))
+        await callback.answer()
+        return
+
+    # Show first 10 users with pagination
+    page = 0
+    users_per_page = 10
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    current_users = users[start_idx:end_idx]
+
+    text = "👥 لیست کاربران:\n\n" if lang == 'fa' else "👥 User List:\n\n"
+
+    for i, user in enumerate(current_users, start_idx + 1):
+        user_id, username, full_name, language, created_at = user
+        username_display = f"@{username}" if username else "بدون نام کاربری" if lang == 'fa' else "No username"
+        lang_flag = "🇮🇷" if language == 'fa' else "🇬🇧"
+        text += f"{i}. {full_name} ({username_display}) {lang_flag}\n"
+
+    # Add pagination buttons if needed
+    buttons = []
+    if len(users) > users_per_page:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(text="⬅️ قبلی" if lang == 'fa' else "⬅️ Previous",
+                                                   callback_data=f"admin_users_page_{page-1}"))
+        if end_idx < len(users):
+            nav_buttons.append(InlineKeyboardButton(text="بعدی ➡️" if lang == 'fa' else "Next ➡️",
+                                                   callback_data=f"admin_users_page_{page+1}"))
+        if nav_buttons:
+            buttons.append(nav_buttons)
+
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_users_page_"))
+async def admin_users_page(callback: types.CallbackQuery):
+    """Handle pagination for user list."""
+    # Check if user is admin
+    if not is_admin(callback.from_user.id):
+        lang = db.get_user_language(callback.from_user.id)
+        await callback.answer(get_text('access_denied', lang) if lang == 'fa' else "Access denied", show_alert=True)
+        return
+
+    lang = db.get_user_language(callback.from_user.id)
+    page = int(callback.data.replace("admin_users_page_", ""))
+
+    users = db.get_all_users()
+    users_per_page = 10
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    current_users = users[start_idx:end_idx]
+
+    text = "👥 لیست کاربران:\n\n" if lang == 'fa' else "👥 User List:\n\n"
+
+    for i, user in enumerate(current_users, start_idx + 1):
+        user_id, username, full_name, language, created_at = user
+        username_display = f"@{username}" if username else "بدون نام کاربری" if lang == 'fa' else "No username"
+        lang_flag = "🇮🇷" if language == 'fa' else "🇬🇧"
+        text += f"{i}. {full_name} ({username_display}) {lang_flag}\n"
+
+    # Add pagination buttons
+    buttons = []
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ قبلی" if lang == 'fa' else "⬅️ Previous",
+                                               callback_data=f"admin_users_page_{page-1}"))
+    if end_idx < len(users):
+        nav_buttons.append(InlineKeyboardButton(text="بعدی ➡️" if lang == 'fa' else "Next ➡️",
+                                               callback_data=f"admin_users_page_{page+1}"))
+    if nav_buttons:
+        buttons.append(nav_buttons)
+
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: types.CallbackQuery):
+    """Show bot statistics."""
+    # Check if user is admin
+    if not is_admin(callback.from_user.id):
+        lang = db.get_user_language(callback.from_user.id)
+        await callback.answer(get_text('access_denied', lang) if lang == 'fa' else "Access denied", show_alert=True)
+        return
+
+    lang = db.get_user_language(callback.from_user.id)
+    stats = db.get_user_stats()
+
+    if lang == 'en':
+        text = "📊 Bot Statistics\n\n"
+        text += f"👥 Total Users: {stats['total_users']:,}\n"
+        text += f"🔥 Active Users (30 days): {stats['active_users']:,}\n\n"
+
+        text += "🌐 Language Distribution:\n"
+        for lang_code, count in stats['language_stats'].items():
+            flag = "🇮🇷 Persian" if lang_code == 'fa' else "🇬🇧 English"
+            text += f"  {flag}: {count:,}\n"
+
+        text += "\n📈 Activity Stats:\n"
+        text += f"💰 Total Transactions: {stats['total_transactions']:,}\n"
+        text += f"📅 Total Plans: {stats['total_plans']:,}\n"
+        text += f"📂 Total Categories: {stats['total_categories']:,}\n"
+    else:
+        text = "📊 آمار ربات\n\n"
+        text += f"👥 تعداد کل کاربران: {stats['total_users']:,}\n"
+        text += f"🔥 کاربران فعال (۳۰ روز): {stats['active_users']:,}\n\n"
+
+        text += "🌐 توزیع زبان‌ها:\n"
+        for lang_code, count in stats['language_stats'].items():
+            flag = "🇮🇷 فارسی" if lang_code == 'fa' else "🇬🇧 انگلیسی"
+            text += f"  {flag}: {count:,}\n"
+
+        text += "\n📈 آمار فعالیت:\n"
+        text += f"💰 تعداد کل تراکنش‌ها: {stats['total_transactions']:,}\n"
+        text += f"📅 تعداد کل برنامه‌ها: {stats['total_plans']:,}\n"
+        text += f"📂 تعداد کل دسته‌بندی‌ها: {stats['total_categories']:,}\n"
+
+    buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
+
     await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -237,15 +423,14 @@ async def plan_main(callback: types.CallbackQuery):
 async def help_cmd(event: types.CallbackQuery | types.Message):
     lang = get_user_lang(event)
     help_text = f"{get_text('help_title', lang)}\n\n{get_text('help_text', lang)}"
-    user_id = event.from_user.id
     buttons = [
+        [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
     ]
-    # Admin-only buttons removed
-    buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
+
     if isinstance(event, types.CallbackQuery):
         await safe_edit_text(event, help_text, reply_markup=kb)
+        await event.answer()
     else:
         await event.answer(help_text, reply_markup=kb)
 
@@ -831,22 +1016,25 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                 f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}"
             )
         else:
+            admin_status = is_admin(message.from_user.id)
             await message.answer(
                 get_text('not_understood', lang),
-                reply_markup=main_menu_kb(lang)
+                reply_markup=main_menu_kb(lang, admin_status)
             )
     except Exception as e:
         if loading_msg:
             await loading_msg.delete()
         if "429" in str(e) or "quota" in str(e).lower():
+            admin_status = is_admin(message.from_user.id)
             await message.answer(
                 get_text('ai_quota_error', lang),
-                reply_markup=main_menu_kb(lang)
+                reply_markup=main_menu_kb(lang, admin_status)
             )
         else:
+            admin_status = is_admin(message.from_user.id)
             await message.answer(
                 get_text('ai_error', lang),
-                reply_markup=main_menu_kb(lang)
+                reply_markup=main_menu_kb(lang, admin_status)
             )
 
 # Start polling
