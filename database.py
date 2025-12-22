@@ -17,7 +17,7 @@ class Database:
             language TEXT DEFAULT 'fa',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
-        
+
         # Add language column if it doesn't exist (for existing databases)
         try:
             self.cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'fa'")
@@ -30,6 +30,27 @@ class Database:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # User Settings table
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            currency TEXT DEFAULT 'toman', -- 'toman' or 'dollar'
+            calendar_format TEXT DEFAULT 'jalali', -- 'jalali' or 'gregorian'
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )""")
+
+        # Cards/Sources table
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cards_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT NOT NULL, -- Bank or source name
+            card_number TEXT, -- 16-digit card number (optional for sources)
+            balance REAL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )""")
+
         # Categories table
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -40,19 +61,34 @@ class Database:
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )""")
 
-        # Transactions table
+        # Transactions table (enhanced)
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             amount REAL,
+            currency TEXT DEFAULT 'toman', -- 'toman' or 'dollar'
             type TEXT, -- 'income' or 'expense'
             category TEXT,
+            card_source_id INTEGER, -- Reference to cards_sources table
             date DATE,
             note TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
+            FOREIGN KEY (user_id) REFERENCES users (user_id),
+            FOREIGN KEY (card_source_id) REFERENCES cards_sources (id)
         )""")
+
+        # Add currency column to transactions if it doesn't exist (for existing databases)
+        try:
+            self.cursor.execute("ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT 'toman'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        # Add card_source_id column to transactions if it doesn't exist (for existing databases)
+        try:
+            self.cursor.execute("ALTER TABLE transactions ADD COLUMN card_source_id INTEGER REFERENCES cards_sources (id)")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Plans table
         self.cursor.execute("""
@@ -98,12 +134,94 @@ class Database:
         self.cursor.execute("UPDATE users SET last_menu_message_id = ? WHERE user_id = ?", (message_id, user_id))
         self.conn.commit()
 
-    # Transaction operations
-    def add_transaction(self, user_id, amount, type, category, date, note=None):
+    # User Settings operations
+    def get_user_settings(self, user_id):
+        """Get user's settings (currency, calendar format)."""
+        self.cursor.execute("SELECT currency, calendar_format FROM user_settings WHERE user_id = ?", (user_id,))
+        result = self.cursor.fetchone()
+        if not result:
+            # Create default settings
+            self.cursor.execute("INSERT INTO user_settings (user_id) VALUES (?)", (user_id,))
+            self.conn.commit()
+            return {'currency': 'toman', 'calendar_format': 'jalali'}
+        return {'currency': result[0], 'calendar_format': result[1]}
+
+    def set_user_currency(self, user_id, currency):
+        """Set user's preferred currency."""
         self.cursor.execute("""
-            INSERT INTO transactions (user_id, amount, type, category, date, note)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, amount, type, category, date, note))
+            INSERT OR REPLACE INTO user_settings (user_id, currency)
+            VALUES (?, ?)
+        """, (user_id, currency))
+        self.conn.commit()
+
+    def set_user_calendar_format(self, user_id, calendar_format):
+        """Set user's preferred calendar format."""
+        self.cursor.execute("""
+            INSERT OR REPLACE INTO user_settings (user_id, calendar_format)
+            VALUES (?, ?)
+        """, (user_id, calendar_format))
+        self.conn.commit()
+
+    # Card/Source operations
+    def add_card_source(self, user_id, name, card_number=None):
+        """Add a new card or source."""
+        self.cursor.execute("""
+            INSERT INTO cards_sources (user_id, name, card_number)
+            VALUES (?, ?, ?)
+        """, (user_id, name, card_number))
+        self.conn.commit()
+        return self.cursor.lastrowid
+
+    def get_cards_sources(self, user_id):
+        """Get all cards/sources for a user."""
+        self.cursor.execute("""
+            SELECT id, name, card_number, balance
+            FROM cards_sources
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        """, (user_id,))
+        return self.cursor.fetchall()
+
+    def get_card_source(self, card_source_id):
+        """Get a specific card/source by ID."""
+        self.cursor.execute("""
+            SELECT id, name, card_number, balance
+            FROM cards_sources
+            WHERE id = ?
+        """, (card_source_id,))
+        return self.cursor.fetchone()
+
+    def update_card_source(self, card_source_id, name=None, card_number=None):
+        """Update card/source information."""
+        if name is not None:
+            self.cursor.execute("UPDATE cards_sources SET name = ? WHERE id = ?", (name, card_source_id))
+        if card_number is not None:
+            self.cursor.execute("UPDATE cards_sources SET card_number = ? WHERE id = ?", (card_number, card_source_id))
+        self.conn.commit()
+
+    def delete_card_source(self, card_source_id):
+        """Delete a card/source."""
+        self.cursor.execute("DELETE FROM cards_sources WHERE id = ?", (card_source_id,))
+        self.conn.commit()
+
+    def update_card_balance(self, card_source_id, amount, transaction_type):
+        """Update card/source balance based on transaction."""
+        if transaction_type == 'income':
+            self.cursor.execute("UPDATE cards_sources SET balance = balance + ? WHERE id = ?", (amount, card_source_id))
+        else:  # expense
+            self.cursor.execute("UPDATE cards_sources SET balance = balance - ? WHERE id = ?", (amount, card_source_id))
+        self.conn.commit()
+
+    # Transaction operations (enhanced)
+    def add_transaction(self, user_id, amount, currency, type, category, card_source_id, date, note=None):
+        self.cursor.execute("""
+            INSERT INTO transactions (user_id, amount, currency, type, category, card_source_id, date, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, amount, currency, type, category, card_source_id, date, note))
+
+        # Update card/source balance
+        self.update_card_balance(card_source_id, amount, type)
+
         self.conn.commit()
 
     def get_monthly_report(self, user_id, month, year):
@@ -134,6 +252,76 @@ class Database:
             'expense': expense,
             'balance': income - expense
         }
+
+    def get_transactions_in_range(self, user_id, start_date, end_date):
+        """Get all transactions within a date range."""
+        self.cursor.execute("""
+            SELECT t.id, COALESCE(t.amount, 0), t.currency, t.type, t.category, t.date, t.note,
+                   cs.name as card_source_name, cs.card_number
+            FROM transactions t
+            LEFT JOIN cards_sources cs ON t.card_source_id = cs.id
+            WHERE t.user_id = ? AND t.date BETWEEN ? AND ?
+            ORDER BY t.date DESC, t.id DESC
+        """, (user_id, start_date, end_date))
+        return self.cursor.fetchall()
+
+    def get_balance_report(self, user_id, start_date, end_date):
+        """Get income, expense, and balance for a date range."""
+        self.cursor.execute("""
+            SELECT type, COALESCE(SUM(amount), 0) FROM transactions
+            WHERE user_id = ? AND date BETWEEN ? AND ?
+            GROUP BY type
+        """, (user_id, start_date, end_date))
+
+        income = 0
+        expense = 0
+        for r_type, amount in self.cursor.fetchall():
+            if r_type == 'income':
+                income = amount or 0
+            else:
+                expense = amount or 0
+
+        return {
+            'income': income,
+            'expense': expense,
+            'balance': income - expense
+        }
+
+    def get_card_source_balances_in_range(self, user_id, start_date, end_date):
+        """Get balance changes for each card/source within a date range."""
+        # Get all transactions in the range with their card/source info
+        self.cursor.execute("""
+            SELECT cs.id, cs.name, cs.card_number, cs.balance as current_balance,
+                   COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount ELSE -t.amount END), 0) as net_change
+            FROM cards_sources cs
+            LEFT JOIN transactions t ON cs.id = t.card_source_id AND t.date BETWEEN ? AND ? AND t.user_id = ?
+            WHERE cs.user_id = ?
+            GROUP BY cs.id, cs.name, cs.card_number, cs.balance
+            ORDER BY cs.name
+        """, (start_date, end_date, user_id, user_id))
+
+        results = []
+        for row in self.cursor.fetchall():
+            card_id, name, card_number, current_balance, net_change = row
+
+            # Handle None values
+            current_balance = current_balance or 0
+            net_change = net_change or 0
+
+            # Calculate balance at start of period (current_balance - net_change in period)
+            start_balance = current_balance - net_change
+            end_balance = current_balance
+
+            results.append({
+                'id': card_id,
+                'name': name,
+                'card_number': card_number,
+                'start_balance': start_balance,
+                'end_balance': end_balance,
+                'net_change': net_change
+            })
+
+        return results
 
     # Plan operations
     def add_plan(self, user_id, title, date, time=None):
@@ -175,18 +363,27 @@ class Database:
 
     def clear_user_data(self, user_id):
         """Removes all transactions and plans for a specific user."""
+        # Reset card/source balances to 0 first
+        self.cursor.execute("UPDATE cards_sources SET balance = 0 WHERE user_id = ?", (user_id,))
         self.cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
         self.cursor.execute("DELETE FROM plans WHERE user_id = ?", (user_id,))
         self.conn.commit()
 
     def clear_financial_data(self, user_id):
         """Removes all transactions (financial data) for a specific user."""
+        # Reset card/source balances to 0 first
+        self.cursor.execute("UPDATE cards_sources SET balance = 0 WHERE user_id = ?", (user_id,))
         self.cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
         self.conn.commit()
 
     def clear_planning_data(self, user_id):
         """Removes all plans (planning data) for a specific user."""
         self.cursor.execute("DELETE FROM plans WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+
+    def clear_cards(self, user_id):
+        """Deletes all cards/sources for a specific user."""
+        self.cursor.execute("DELETE FROM cards_sources WHERE user_id = ?", (user_id,))
         self.conn.commit()
 
     # Admin operations
