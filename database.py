@@ -14,8 +14,15 @@ class Database:
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             full_name TEXT,
+            language TEXT DEFAULT 'fa',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
+        
+        # Add language column if it doesn't exist (for existing databases)
+        try:
+            self.cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'fa'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Categories table
         self.cursor.execute("""
@@ -59,8 +66,19 @@ class Database:
 
     # User operations
     def add_user(self, user_id, username, full_name):
-        self.cursor.execute("INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
+        self.cursor.execute("INSERT OR IGNORE INTO users (user_id, username, full_name, language) VALUES (?, ?, ?, 'fa')",
                             (user_id, username, full_name))
+        self.conn.commit()
+    
+    def get_user_language(self, user_id):
+        """Get user's preferred language."""
+        self.cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
+        result = self.cursor.fetchone()
+        return result[0] if result else 'fa'
+    
+    def set_user_language(self, user_id, language):
+        """Set user's preferred language."""
+        self.cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (language, user_id))
         self.conn.commit()
 
     # Transaction operations
@@ -79,6 +97,26 @@ class Database:
             GROUP BY type
         """, (user_id, f"{month:02d}", str(year)))
         return self.cursor.fetchall()
+    
+    def get_current_month_balance(self, user_id):
+        """Get current month income, expense, and balance."""
+        from datetime import date
+        today = date.today()
+        report = self.get_monthly_report(user_id, today.month, today.year)
+        
+        income = 0
+        expense = 0
+        for r_type, amount in report:
+            if r_type == 'income':
+                income = amount or 0
+            else:
+                expense = amount or 0
+        
+        return {
+            'income': income,
+            'expense': expense,
+            'balance': income - expense
+        }
 
     # Plan operations
     def add_plan(self, user_id, title, date, time=None):
@@ -109,9 +147,9 @@ class Database:
     # Category operations
     def get_categories(self, user_id, type=None):
         if type:
-            self.cursor.execute("SELECT name FROM categories WHERE (user_id = ? OR user_id IS NULL) AND type = ?", (user_id, type))
+            self.cursor.execute("SELECT name FROM categories WHERE user_id = ? AND type = ?", (user_id, type))
         else:
-            self.cursor.execute("SELECT name, type FROM categories WHERE (user_id = ? OR user_id IS NULL)", (user_id,))
+            self.cursor.execute("SELECT name, type FROM categories WHERE user_id = ?", (user_id,))
         return [row[0] for row in self.cursor.fetchall()]
 
     def add_category(self, user_id, name, type):
@@ -121,5 +159,15 @@ class Database:
     def clear_user_data(self, user_id):
         """Removes all transactions and plans for a specific user."""
         self.cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
+        self.cursor.execute("DELETE FROM plans WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+
+    def clear_financial_data(self, user_id):
+        """Removes all transactions (financial data) for a specific user."""
+        self.cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+
+    def clear_planning_data(self, user_id):
+        """Removes all plans (planning data) for a specific user."""
         self.cursor.execute("DELETE FROM plans WHERE user_id = ?", (user_id,))
         self.conn.commit()

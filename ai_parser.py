@@ -1,10 +1,21 @@
-from google import genai
 import json
+import asyncio
 from config import GEMINI_API_KEY
+
 
 class AIParser:
     def __init__(self):
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
+        # Lazy import of genai to avoid import-time failure when library is not installed
+        try:
+            from google import genai
+            self.genai = genai
+        except Exception:
+            self.genai = None
+
+        # Do NOT create the client at import time. Defer client creation to first use
+        # to avoid any potential blocking network calls during module import.
+        self.client = None
+
         self.model_name = 'gemini-flash-latest'
 
     async def parse_message(self, text, current_date):
@@ -52,9 +63,24 @@ class AIParser:
         """
         
         try:
-            # Use the new synchronous call (aiogram handler is async, so this is fine if it doesn't block too long)
-            # Alternatively, we could use await self.client.aio.models.generate_content for async
-            response = self.client.models.generate_content(
+            # Lazily create the client if possible. Creating the client may do network
+            # operations depending on the library; perform creation in a thread to
+            # avoid blocking the event loop.
+            if not self.client and self.genai and GEMINI_API_KEY:
+                def create_client():
+                    try:
+                        return self.genai.Client(api_key=GEMINI_API_KEY)
+                    except Exception:
+                        return None
+                self.client = await asyncio.to_thread(create_client)
+
+            # If client is still not available, return fallback so bot can continue operating
+            if not self.client:
+                return {"action": "fallback_to_buttons"}
+
+            # Run the synchronous API call in a thread pool to avoid blocking the event loop
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
                 model=self.model_name,
                 contents=prompt
             )
