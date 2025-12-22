@@ -20,18 +20,28 @@ class AIParser:
 
     async def parse_message(self, text, current_date):
         prompt = f"""
-        You are an AI Agent that processes Persian text for a Telegram bot with two sections: Financial Management and Planning.
+        You are an AI Agent that processes Persian and English text for a comprehensive Telegram bot with multiple sections: Main Menu, Financial Management, Planning, Settings, Admin Panel, and Help.
         Current date is: {current_date}
 
         Your task:
-        - Understand Persian messages from users
+        - Understand Persian and English messages from users
         - Extract necessary entities
         - Return structured JSON for the bot
 
-        1. Financial Management:
-        - Recognize income/expense messages
+        1. NAVIGATION COMMANDS:
+        - Main menu navigation: "main menu", "منوی اصلی", "home", "خانه"
+        - Financial section: "finance", "financial", "مدیریت مالی", "مالی", "💰"
+        - Planning section: "planning", "برنامه‌ریزی", "📅"
+        - Settings: "settings", "تنظیمات", "⚙️"
+        - Help: "help", "راهنما", "💡"
+        - Admin panel: "admin", "پنل مدیریت", "👑" (only for admins)
+
+        2. FINANCIAL MANAGEMENT:
+        - Add transaction: Recognize income/expense messages
         - Extract: amount (numeric), type (income/expense), category, date (YYYY-MM-DD), optional note
-        - Output example:
+        - Monthly report: "report", "گزارش", "monthly report", "گزارش ماهانه"
+        - Categories: "categories", "دسته‌بندی‌ها", "categories management", "مدیریت دسته‌بندی‌ها"
+        - Output example for transaction:
         {{
           "section": "finance",
           "action": "add_transaction",
@@ -41,11 +51,23 @@ class AIParser:
           "date": "{current_date}",
           "note": ""
         }}
+        - Output example for navigation:
+        {{
+          "section": "finance",
+          "action": "main"
+        }}
+        - Output example for report:
+        {{
+          "section": "finance",
+          "action": "monthly_report"
+        }}
 
-        2. Planning:
-        - Recognize task messages
+        3. PLANNING:
+        - Add plan: Recognize task messages
         - Extract: title, date (YYYY-MM-DD), optional time (HH:MM)
-        - Output example:
+        - Today's plans: "today's plans", "برنامه‌های امروز", "today plans"
+        - Week's plans: "week's plans", "برنامه‌های هفته", "week plans"
+        - Output example for plan:
         {{
           "section": "planning",
           "action": "add_plan",
@@ -53,11 +75,51 @@ class AIParser:
           "date": "{current_date}",
           "time": "08:00"
         }}
+        - Output example for viewing plans:
+        {{
+          "section": "planning",
+          "action": "plans_today"
+        }}
+
+        4. SETTINGS:
+        - Change language: "change language", "تغییر زبان", "language"
+        - Clear data: "clear data", "پاکسازی داده‌ها", "clear all", "پاکسازی همه"
+        - Clear financial: "clear financial", "پاکسازی مالی"
+        - Clear planning: "clear planning", "پاکسازی برنامه‌ریزی"
+        - Output example:
+        {{
+          "section": "settings",
+          "action": "change_language"
+        }}
+        {{
+          "section": "settings",
+          "action": "clear_data",
+          "data_type": "all" // or "financial" or "planning"
+        }}
+
+        5. HELP:
+        - Show help: "help", "راهنما", "how to use", "نحوه استفاده"
+        - Output example:
+        {{
+          "section": "help",
+          "action": "show"
+        }}
+
+        6. ADMIN PANEL:
+        - User list: "user list", "لیست کاربران", "users"
+        - Statistics: "statistics", "آمار", "stats"
+        - Output example:
+        {{
+          "section": "admin",
+          "action": "users"
+        }}
 
         Rules:
         - If the text is ambiguous or not related, return {{"action":"fallback_to_buttons"}}
-        - Always support Persian language (RTL)
+        - Always support both Persian (RTL) and English languages
         - Only return JSON (no markdown blocks, no extra text)
+        - For navigation commands, prioritize the most specific action
+        - If user mentions multiple actions, choose the primary one
 
         Text: "{text}"
         """

@@ -50,7 +50,7 @@ TRANSLATIONS = {
         'plans_week_title': '📅 برنامه‌های ۷ روز آینده',
         # Help
         'help_title': '💡 راهنما:',
-        'help_text': 'شما می‌توانید هم با دکمه‌ها و هم با ارسال متن  کارهای خود را انجام دهید.\n\nمثال‌های ورودی هوشمند:\n- امروز ۲۰۰ تومن غذا دادم\n- حقوق دیروز ۴ میلیون\n- فردا ساعت ۸ ورزش\n\nدستیار هوشمند متن شما را تحلیل کرده و ثبت می‌کند.',
+        'help_text': 'شما می‌توانید هم با دکمه‌ها و هم با ارسال متن  کارهای خود را انجام دهید.\n\nمثال‌های ورودی هوشمند:\n- امروز ۲۰۰ تومن غذا دادم\n- حقوق دیروز ۴ میلیون\n- فردا ساعت ۸ ورزش\n\nدستورات ناوبری:\n- "منوی اصلی" یا "main menu"\n- "مدیریت مالی" یا "finance"\n- "برنامه‌ریزی" یا "planning"\n- "تنظیمات" یا "settings"\n- "راهنما" یا "help"\n- "گزارش ماهانه" یا "monthly report"\n- "برنامه‌های امروز" یا "today plans"\n\nدستیار هوشمند متن شما را تحلیل کرده و ثبت می‌کند.',
         'clear_data': '🗑 پاکسازی داده‌ها',
         'select_clear_option': '⚠️ کدام داده‌ها را می‌خواهید پاک کنید؟',
         'clear_financial': '💰 پاکسازی داده‌های مالی',
@@ -61,6 +61,7 @@ TRANSLATIONS = {
         'financial_data_cleared': '✅ داده‌های مالی شما با موفقیت حذف شد.',
         'planning_data_cleared': '✅ داده‌های برنامه‌ریزی شما با موفقیت حذف شد.',
         'no_access': '❌ شما دسترسی به این بخش را ندارید.',
+        'navigating_to': '🔄 در حال انتقال به بخش {section}...',
         # Categories
         'your_categories': '📂 دسته‌بندی‌های شما:',
         'expenses': '🔻 هزینه‌ها:',
@@ -90,6 +91,7 @@ TRANSLATIONS = {
     },
     'en': {
         # Main menu
+        'navigating_to': '🔄 Navigating to {section}...',
         'welcome': 'Hello! Welcome to the Financial and Planning Assistant.\nPlease select one of the sections below:',
         'settings': '⚙️ Settings',
         'clear_data': '🗑 Clear Data',
@@ -144,7 +146,7 @@ TRANSLATIONS = {
         'plans_week_title': '📅 Next 7 Days Plans',
         # Help
         'help_title': '💡 Help:',
-        'help_text': 'You can use both buttons and send text to perform tasks.\n\nSmart input examples:\n- Today I spent 200 Toman on food\n- Yesterday salary 4 million\n- Tomorrow at 8 o\'clock exercise\n\nThe smart assistant analyzes your text and records it.',
+        'help_text': 'You can use both buttons and send text to perform tasks.\n\nSmart input examples:\n- Today I spent 200 Toman on food\n- Yesterday salary 4 million\n- Tomorrow at 8 o\'clock exercise\n\nNavigation commands:\n- "main menu" or "منوی اصلی"\n- "finance" or "مدیریت مالی"\n- "planning" or "برنامه‌ریزی"\n- "settings" or "تنظیمات"\n- "help" or "راهنما"\n- "monthly report" or "گزارش ماهانه"\n- "today plans" or "برنامه‌های امروز"\n\nThe smart assistant analyzes your text and records it.',
         # Categories
         'your_categories': '📂 Your Categories:',
         'expenses': '🔻 Expenses:',

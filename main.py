@@ -138,11 +138,10 @@ async def start_cmd(message: types.Message):
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
     lang = db.get_user_language(message.from_user.id)
     admin_status = is_admin(message.from_user.id)
-    menu_msg = await message.answer(
+    await message.answer(
         get_text('welcome', lang),
         reply_markup=main_menu_kb(lang, admin_status)
     )
-    db.set_last_menu_message_id(message.from_user.id, menu_msg.message_id)
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: types.CallbackQuery):
@@ -562,8 +561,6 @@ async def start_add_transaction(callback: types.CallbackQuery, state: FSMContext
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
     await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    # Store message ID for editing in subsequent steps
-    await state.update_data(message_id=callback.message.message_id)
     await state.set_state(TransactionStates.waiting_for_amount)
     await callback.answer()
 
@@ -575,43 +572,19 @@ async def process_amount(message: types.Message, state: FSMContext):
     import re
     nums = re.findall(r'\d+', amount_str)
     if not nums:
-        # Delete old message and send new error message
-        data = await state.get_data()
-        old_message_id = data.get('message_id')
-        if old_message_id:
-            try:
-                await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
-            except Exception:
-                pass  # Ignore if message already deleted
-
-        text = f"{get_text('invalid_amount', lang)}\n\n{get_text('cancel_hint', lang)}"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
-        ]
-        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await state.update_data(message_id=new_msg.message_id)
+        await message.answer(f"{get_text('invalid_amount', lang)}\n\n{get_text('cancel_hint', lang)}")
         return
-
+    
     amount = float(nums[0])
     await state.update_data(amount=amount)
-
-    # Delete old message and send new menu
-    data = await state.get_data()
-    old_message_id = data.get('message_id')
-    if old_message_id:
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
-        except Exception:
-            pass  # Ignore if message already deleted
-
+    
     text = f"{get_text('amount_label', lang)}: {amount:,} {get_text('toman', lang)}\n\n{get_text('select_type', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('expense_type', lang), callback_data="type_expense")],
         [InlineKeyboardButton(text=get_text('income_type', lang), callback_data="type_income")],
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
-    new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.update_data(message_id=new_msg.message_id)
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(TransactionStates.waiting_for_type)
 
 @dp.callback_query(TransactionStates.waiting_for_type)
@@ -714,14 +687,6 @@ async def cancel_transaction(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
     await callback.answer(get_text('cancel', lang))
 
-@dp.callback_query(F.data == "cancel_plan")
-async def cancel_plan(callback: types.CallbackQuery, state: FSMContext):
-    lang = get_user_lang(callback)
-    await state.clear()
-    text = f"{get_text('transaction_cancelled', lang).replace('تراکنش', 'برنامه') if lang == 'fa' else get_text('transaction_cancelled', lang).replace('Transaction', 'Plan')}\n\n{get_text('select_option', lang)}"
-    await safe_edit_text(callback, text, reply_markup=plan_menu_kb(lang))
-    await callback.answer(get_text('cancel', lang))
-
 @dp.callback_query(F.data == "confirm_transaction")
 async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
@@ -795,8 +760,8 @@ async def start_add_category(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
     cat_type = "expense" if callback.data == "add_category_expense" else "income"
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
-
-    await state.update_data(category_type=cat_type, message_id=callback.message.message_id)
+    
+    await state.update_data(category_type=cat_type)
     text = f"➕ {get_text('add_expense_cat', lang) if cat_type == 'expense' else get_text('add_income_cat', lang)}\n\n{get_text('enter_category_name', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
@@ -812,55 +777,25 @@ async def process_category_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     cat_type = data.get('category_type', 'expense')
     category_name = message.text.strip()
-    message_id = data.get('message_id')
-
+    
     if not category_name:
-        # Delete old message and send new error message
-        if message_id:
-            try:
-                await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
-            except Exception:
-                pass  # Ignore if message already deleted
-
-        text = f"{get_text('category_empty', lang)}\n\n{get_text('enter_category_name', lang)}"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
-        ]
-        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await state.update_data(message_id=new_msg.message_id)
+        await message.answer(get_text('category_empty', lang))
         return
-
+    
     # Check if category already exists
     existing_cats = db.get_categories(message.from_user.id, cat_type)
     if category_name in existing_cats:
-        # Delete old message and send new error message
-        if message_id:
-            try:
-                await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
-            except Exception:
-                pass  # Ignore if message already deleted
-
-        text = f"{get_text('category_exists', lang, name=category_name)}\n\n{get_text('enter_category_name', lang)}"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
-        ]
-        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await state.update_data(message_id=new_msg.message_id)
+        await message.answer(get_text('category_exists', lang, name=category_name))
         return
-
+    
     # Add the category
     db.add_category(message.from_user.id, category_name, cat_type)
-
+    
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
-    text = get_text('category_added', lang, name=category_name, type=type_text)
-
-    # Delete old message and send success message
-    if message_id:
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
-        except Exception:
-            pass  # Ignore if message already deleted
-    await message.answer(text, reply_markup=finance_menu_kb(lang))
+    await message.answer(
+        get_text('category_added', lang, name=category_name, type=type_text),
+        reply_markup=finance_menu_kb(lang)
+    )
     await state.clear()
 
 # Reports
@@ -899,13 +834,7 @@ async def monthly_report(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "add_plan")
 async def start_add_plan(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
-    text = f"{get_text('enter_plan_title', lang)}\n\n{get_text('cancel_hint', lang)}"
-    buttons = [
-        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
-    ]
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    # Store message ID for editing in subsequent steps
-    await state.update_data(message_id=callback.message.message_id)
+    await callback.message.answer(get_text('enter_plan_title', lang))
     await state.set_state(PlanStates.waiting_for_title)
     await callback.answer()
 
@@ -915,24 +844,12 @@ async def process_plan_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
-
-    # Delete old message and send new menu
-    data = await state.get_data()
-    old_message_id = data.get('message_id')
-    if old_message_id:
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
-        except Exception:
-            pass  # Ignore if message already deleted
-
-    text = f"{get_text('enter_plan_title', lang).replace(':', '')}: {message.text}\n\n{get_text('select_date', lang)}"
+    
     buttons = [
         [InlineKeyboardButton(text=get_text('today', lang), callback_data=f"pdate_{today}")],
-        [InlineKeyboardButton(text=get_text('tomorrow', lang), callback_data="pdate_tomorrow")],
-        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
+        [InlineKeyboardButton(text=get_text('tomorrow', lang), callback_data="pdate_tomorrow")]
     ]
-    new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.update_data(message_id=new_msg.message_id)
+    await message.answer(get_text('select_date', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(PlanStates.waiting_for_date)
 
 @dp.callback_query(PlanStates.waiting_for_date)
@@ -943,20 +860,11 @@ async def process_plan_date(callback: types.CallbackQuery, state: FSMContext):
         p_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     else:
         p_date = callback.data.replace("pdate_", "")
-
+    
     await state.update_data(date=p_date)
-
-    # Get stored data and update message
-    data = await state.get_data()
-    title = data.get('title', '')
-    date_display = p_date
-    text = f"{get_text('enter_plan_title', lang).replace(':', '')}: {title}\n{get_text('date_label', lang)}: {date_display}\n\n{get_text('enter_time', lang)}"
     skip_text = "Skip" if lang == 'en' else "رد کردن"
-    buttons = [
-        [InlineKeyboardButton(text=skip_text, callback_data="skip_time")],
-        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
-    ]
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.message.answer(get_text('enter_time', lang), 
+                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=skip_text, callback_data="skip_time")]]))
     await state.set_state(PlanStates.waiting_for_time)
     await callback.answer()
 
@@ -968,23 +876,16 @@ async def process_plan_time(event: types.Message | types.CallbackQuery, state: F
         await state.update_data(time=None)
     else:
         await state.update_data(time=event.text)
-
+    
     data = await state.get_data()
     db.add_plan(event.from_user.id, data['title'], data['date'], data.get('time'))
-
+    
     text = get_text('plan_saved', lang)
     if isinstance(event, types.CallbackQuery):
         await safe_edit_text(event, text, reply_markup=planning_menu_kb(lang))
     else:
-        # For message events, delete old message and send new one
-        old_message_id = data.get('message_id')
-        if old_message_id:
-            try:
-                await event.bot.delete_message(chat_id=event.chat.id, message_id=old_message_id)
-            except Exception:
-                pass  # Ignore if message already deleted
         await event.answer(text, reply_markup=planning_menu_kb(lang))
-
+    
     await state.clear()
 
 # View Plans - Helper function
@@ -1078,80 +979,344 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
     from datetime import date
     current_date = date.today().strftime("%Y-%m-%d")
 
-    # Delete previous menu if it exists
-    last_menu_id = db.get_last_menu_message_id(message.from_user.id)
-    if last_menu_id:
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=last_menu_id)
-        except Exception:
-            pass  # Ignore if message already deleted
-
     loading_msg = await message.answer(get_text('analyzing', lang))
     try:
         result = await ai_parser.parse_message(message.text, current_date)
         await loading_msg.delete()
 
-        admin_status = is_admin(message.from_user.id)
+        section = result.get("section")
+        action = result.get("action")
 
-        if result.get("action") == "add_transaction" and result.get("section") == "finance":
-            amount = result.get("amount", 0)
-            t_type = result.get("type", "expense")
-            category = result.get("category", "سایر" if lang == 'fa' else "Other")
-            t_date = result.get("date", current_date)
-            note = result.get("note", "")
+        # Handle different sections and actions
+        if section == "finance":
+            if action == "main":
+                # Show finance main menu
+                balance = db.get_current_month_balance(message.from_user.id)
+                if lang == 'en':
+                    text = (
+                        "💰 Financial Management\n\n"
+                        f"📊 Current Month Status:\n"
+                        f"🔺 Income: {balance['income']:,} Toman\n"
+                        f"🔻 Expense: {balance['expense']:,} Toman\n"
+                        f"⚖️ Balance: {balance['balance']:,} Toman\n\n"
+                        "Please select one of the options below:"
+                    )
+                else:  # Persian
+                    text = (
+                        "💰 بخش مدیریت مالی\n\n"
+                        f"📊 وضعیت ماه جاری:\n"
+                        f"🔺 درآمد: {balance['income']:,} تومان\n"
+                        f"🔻 هزینه: {balance['expense']:,} تومان\n"
+                        f"⚖️ مانده: {balance['balance']:,} تومان\n\n"
+                        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
+                    )
+                await message.answer(text, reply_markup=finance_menu_kb(lang))
 
-            db.add_transaction(message.from_user.id, amount, t_type, category, t_date, note)
+            elif action == "add_transaction":
+                # Add transaction directly
+                amount = result.get("amount", 0)
+                t_type = result.get("type", "expense")
+                category = result.get("category", "سایر" if lang == 'fa' else "Other")
+                t_date = result.get("date", current_date)
+                note = result.get("note", "")
 
-            type_text = get_text('expense_type', lang) if t_type == "expense" else get_text('income_type', lang)
-            success_msg = await message.answer(
-                f"{get_text('ai_transaction_saved', lang)}\n"
-                f"{get_text('amount_label', lang)}: {amount:,}\n"
-                f"{get_text('type_label', lang)}: {type_text}\n"
-                f"{get_text('category_label', lang)}: {category}\n"
-                f"{get_text('date_label', lang)}: {t_date}",
+                db.add_transaction(message.from_user.id, amount, t_type, category, t_date, note)
+
+                type_text = get_text('expense_type', lang) if t_type == "expense" else get_text('income_type', lang)
+                await message.answer(
+                    f"{get_text('ai_transaction_saved', lang)}\n"
+                    f"{get_text('amount_label', lang)}: {amount:,}\n"
+                    f"{get_text('type_label', lang)}: {type_text}\n"
+                    f"{get_text('category_label', lang)}: {category}\n"
+                    f"{get_text('date_label', lang)}: {t_date}"
+                )
+
+            elif action == "monthly_report":
+                # Show monthly report
+                from datetime import date
+                today = date.today()
+                report = db.get_monthly_report(message.from_user.id, today.month, today.year)
+
+                income = 0
+                expense = 0
+                for r_type, amount in report:
+                    if r_type == 'income': income = amount
+                    else: expense = amount
+
+                month_str = today.strftime("%Y-%m")
+                if lang == 'en':
+                    text = (
+                        f"{get_text('monthly_report_title', lang, month=month_str)}\n\n"
+                        f"{get_text('total_income', lang)}: {income:,} {get_text('toman', lang)}\n"
+                        f"{get_text('total_expense', lang)}: {expense:,} {get_text('toman', lang)}\n"
+                        f"{get_text('balance', lang)}: {income - expense:,} {get_text('toman', lang)}"
+                    )
+                else:
+                    text = (
+                        f"{get_text('monthly_report_title', lang, month=month_str)}\n\n"
+                        f"{get_text('total_income', lang)}: {income:,} {get_text('toman', lang)}\n"
+                        f"{get_text('total_expense', lang)}: {expense:,} {get_text('toman', lang)}\n"
+                        f"{get_text('balance', lang)}: {income - expense:,} {get_text('toman', lang)}"
+                    )
+                await message.answer(text, reply_markup=finance_menu_kb(lang))
+
+            elif action == "categories":
+                # Show categories
+                expense_cats = db.get_categories(message.from_user.id, "expense")
+                income_cats = db.get_categories(message.from_user.id, "income")
+
+                text = f"{get_text('your_categories', lang)}\n\n"
+
+                if expense_cats:
+                    text += f"{get_text('expenses', lang)}\n"
+                    for i, cat in enumerate(expense_cats, 1):
+                        text += f"{i}. {cat}\n"
+                    text += "\n"
+                else:
+                    text += f"{get_text('expenses', lang)} {get_text('no_category', lang)}\n\n"
+
+                if income_cats:
+                    text += f"{get_text('incomes', lang)}\n"
+                    for i, cat in enumerate(income_cats, 1):
+                        text += f"{i}. {cat}\n"
+                else:
+                    text += f"{get_text('incomes', lang)} {get_text('no_category', lang)}"
+
+                buttons = [
+                    [InlineKeyboardButton(text=get_text('add_expense_cat', lang), callback_data="add_category_expense")],
+                    [InlineKeyboardButton(text=get_text('add_income_cat', lang), callback_data="add_category_income")],
+                    [InlineKeyboardButton(text=get_text('back', lang), callback_data="finance_main")]
+                ]
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+        elif section == "planning":
+            if action == "main":
+                # Show planning main menu
+                text = f"{get_text('planning_main', lang)}\n{get_text('planning_desc', lang)}"
+                await message.answer(text, reply_markup=planning_menu_kb(lang))
+
+            elif action == "add_plan":
+                # Add plan directly
+                title = result.get("title", "بدون عنوان" if lang == 'fa' else "No title")
+                p_date = result.get("date", current_date)
+                time = result.get("time")
+
+                db.add_plan(message.from_user.id, title, p_date, time)
+
+                time_display = time or ("نامشخص" if lang == 'fa' else "Not specified")
+                await message.answer(
+                    f"{get_text('ai_plan_saved', lang)}\n"
+                    f"📝 {get_text('enter_plan_title', lang).replace('📝 ', '').replace(':', '')}: {title}\n"
+                    f"{get_text('date_label', lang)}: {p_date}\n"
+                    f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}"
+                )
+
+            elif action == "plans_today":
+                # Show today's plans
+                from datetime import date, timedelta
+                today = date.today()
+                plans = db.get_plans(message.from_user.id, date=today.strftime("%Y-%m-%d"))
+
+                if not plans:
+                    await message.answer(f"{get_text('plans_today_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
+                    return
+
+                text = f"{get_text('plans_today_title', lang)}:\n\n"
+                buttons = []
+                for plan in plans:
+                    status = "✅" if plan[5] == 1 else "⬜️"
+                    time_part = f" ({plan[4]})" if plan[4] else ""
+                    text += f"{status} {plan[2]}{time_part} - {plan[3]}\n"
+                    buttons.append([
+                        InlineKeyboardButton(text=f"🗑 {plan[2]}", callback_data=f"del_plan_{plan[0]}_today"),
+                        InlineKeyboardButton(text=f"✅ {plan[2]}", callback_data=f"done_plan_{plan[0]}_today")
+                    ])
+
+                buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="plan_main")])
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+            elif action == "plans_week":
+                # Show week's plans
+                from datetime import date, timedelta
+                today = date.today()
+                start_week = today
+                end_week = today + timedelta(days=7)
+                plans = db.get_plans(message.from_user.id, start_date=start_week.strftime("%Y-%m-%d"), end_date=end_week.strftime("%Y-%m-%d"))
+
+                if not plans:
+                    await message.answer(f"{get_text('plans_week_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
+                    return
+
+                text = f"{get_text('plans_week_title', lang)}:\n\n"
+                buttons = []
+                for plan in plans:
+                    status = "✅" if plan[5] == 1 else "⬜️"
+                    time_part = f" ({plan[4]})" if plan[4] else ""
+                    text += f"{status} {plan[2]}{time_part} - {plan[3]}\n"
+                    buttons.append([
+                        InlineKeyboardButton(text=f"🗑 {plan[2]}", callback_data=f"del_plan_{plan[0]}_week"),
+                        InlineKeyboardButton(text=f"✅ {plan[2]}", callback_data=f"done_plan_{plan[0]}_week")
+                    ])
+
+                buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="plan_main")])
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+        elif section == "settings":
+            if action == "change_language":
+                # Show language selection menu
+                current_lang = db.get_user_language(message.from_user.id)
+
+                if current_lang == 'en':
+                    text = "🌐 Change Language\n\nCurrent language: English\n\nPlease select your preferred language:"
+                    buttons = [
+                        [InlineKeyboardButton(text="🇮🇷 فارسی (Persian)", callback_data="set_lang_fa")],
+                        [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
+                        [InlineKeyboardButton(text="🔙 Back", callback_data="settings")]
+                    ]
+                else:  # Persian
+                    text = "🌐 تغییر زبان\n\nزبان فعلی: فارسی\n\nلطفاً زبان مورد نظر خود را انتخاب کنید:"
+                    buttons = [
+                        [InlineKeyboardButton(text="🇮🇷 فارسی", callback_data="set_lang_fa")],
+                        [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
+                        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
+                    ]
+
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+            elif action == "clear_data":
+                # Show clear data options
+                data_type = result.get("data_type", "all")
+                lang = get_user_lang(message)
+                text = get_text('select_clear_option', lang)
+                buttons = [
+                    [InlineKeyboardButton(text=get_text('clear_financial', lang), callback_data="execute_clear_financial")],
+                    [InlineKeyboardButton(text=get_text('clear_planning', lang), callback_data="execute_clear_planning")],
+                    [InlineKeyboardButton(text=get_text('clear_everything', lang), callback_data="execute_clear_everything")],
+                    [InlineKeyboardButton(text=get_text('cancel', lang), callback_data="settings")]
+                ]
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+        elif section == "help":
+            if action == "show":
+                # Show help
+                help_text = f"{get_text('help_title', lang)}\n\n{get_text('help_text', lang)}"
+                buttons = [
+                    [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
+                ]
+                kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+                await message.answer(help_text, reply_markup=kb)
+
+        elif section == "admin":
+            if not is_admin(message.from_user.id):
+                await message.answer(get_text('access_denied', lang), show_alert=True)
+                return
+
+            if action == "users":
+                # Show user list (first page)
+                users = db.get_all_users()
+
+                if not users:
+                    text = "👥 لیست کاربران\n\nهیچ کاربری یافت نشد." if lang == 'fa' else "👥 User List\n\nNo users found."
+                    await message.answer(text, reply_markup=admin_menu_kb(lang))
+                    return
+
+                page = 0
+                users_per_page = 10
+                start_idx = page * users_per_page
+                end_idx = start_idx + users_per_page
+                current_users = users[start_idx:end_idx]
+
+                text = "👥 لیست کاربران:\n\n" if lang == 'fa' else "👥 User List:\n\n"
+
+                for i, user in enumerate(current_users, start_idx + 1):
+                    user_id, username, full_name, language, created_at = user
+                    username_display = f"@{username}" if username else "بدون نام کاربری" if lang == 'fa' else "No username"
+                    lang_flag = "🇮🇷" if language == 'fa' else "🇬🇧"
+                    text += f"{i}. {full_name} ({username_display}) {lang_flag}\n"
+
+                buttons = []
+                if len(users) > users_per_page:
+                    nav_buttons = []
+                    if page > 0:
+                        nav_buttons.append(InlineKeyboardButton(text="⬅️ قبلی" if lang == 'fa' else "⬅️ Previous",
+                                                       callback_data=f"admin_users_page_{page-1}"))
+                    if end_idx < len(users):
+                        nav_buttons.append(InlineKeyboardButton(text="بعدی ➡️" if lang == 'fa' else "Next ➡️",
+                                                       callback_data=f"admin_users_page_{page+1}"))
+                    if nav_buttons:
+                        buttons.append(nav_buttons)
+
+                buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+            elif action == "stats":
+                # Show statistics
+                stats = db.get_user_stats()
+
+                if lang == 'en':
+                    text = "📊 Bot Statistics\n\n"
+                    text += f"👥 Total Users: {stats['total_users']:,}\n"
+                    text += f"🔥 Active Users (30 days): {stats['active_users']:,}\n\n"
+
+                    text += "🌐 Language Distribution:\n"
+                    for lang_code, count in stats['language_stats'].items():
+                        flag = "🇮🇷 Persian" if lang_code == 'fa' else "🇬🇧 English"
+                        text += f"  {flag}: {count:,}\n"
+
+                    text += "\n📈 Activity Stats:\n"
+                    text += f"💰 Total Transactions: {stats['total_transactions']:,}\n"
+                    text += f"📅 Total Plans: {stats['total_plans']:,}\n"
+                    text += f"📂 Total Categories: {stats['total_categories']:,}\n"
+                else:
+                    text = "📊 آمار ربات\n\n"
+                    text += f"👥 تعداد کل کاربران: {stats['total_users']:,}\n"
+                    text += f"🔥 کاربران فعال (۳۰ روز): {stats['active_users']:,}\n\n"
+
+                    text += "🌐 توزیع زبان‌ها:\n"
+                    for lang_code, count in stats['language_stats'].items():
+                        flag = "🇮🇷 فارسی" if lang_code == 'fa' else "🇬🇧 انگلیسی"
+                        text += f"  {flag}: {count:,}\n"
+
+                    text += "\n📈 آمار فعالیت:\n"
+                    text += f"💰 تعداد کل تراکنش‌ها: {stats['total_transactions']:,}\n"
+                    text += f"📅 تعداد کل برنامه‌ها: {stats['total_plans']:,}\n"
+                    text += f"📂 تعداد کل دسته‌بندی‌ها: {stats['total_categories']:,}\n"
+
+                buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+        elif action == "main_menu" or (section == "main" and action == "menu"):
+            # Show main menu
+            admin_status = is_admin(message.from_user.id)
+            await message.answer(
+                get_text('welcome', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
-            db.set_last_menu_message_id(message.from_user.id, success_msg.message_id)
-
-        elif result.get("action") == "add_plan" and result.get("section") == "planning":
-            title = result.get("title", "بدون عنوان" if lang == 'fa' else "No title")
-            p_date = result.get("date", current_date)
-            time = result.get("time")
-
-            db.add_plan(message.from_user.id, title, p_date, time)
-
-            time_display = time or ("نامشخص" if lang == 'fa' else "Not specified")
-            success_msg = await message.answer(
-                f"{get_text('ai_plan_saved', lang)}\n"
-                f"📝 {get_text('enter_plan_title', lang).replace('📝 ', '').replace(':', '')}: {title}\n"
-                f"{get_text('date_label', lang)}: {p_date}\n"
-                f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}",
-                reply_markup=main_menu_kb(lang, admin_status)
-            )
-            db.set_last_menu_message_id(message.from_user.id, success_msg.message_id)
 
         else:
-            menu_msg = await message.answer(
+            # Fallback to buttons for unrecognized commands
+            admin_status = is_admin(message.from_user.id)
+            await message.answer(
                 get_text('not_understood', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
-            db.set_last_menu_message_id(message.from_user.id, menu_msg.message_id)
 
     except Exception as e:
         if loading_msg:
             await loading_msg.delete()
-        admin_status = is_admin(message.from_user.id)
         if "429" in str(e) or "quota" in str(e).lower():
-            error_msg = await message.answer(
+            admin_status = is_admin(message.from_user.id)
+            await message.answer(
                 get_text('ai_quota_error', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
         else:
-            error_msg = await message.answer(
+            admin_status = is_admin(message.from_user.id)
+            await message.answer(
                 get_text('ai_error', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
-        db.set_last_menu_message_id(message.from_user.id, error_msg.message_id)
 
 # Start polling
 async def main():
