@@ -138,10 +138,11 @@ async def start_cmd(message: types.Message):
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
     lang = db.get_user_language(message.from_user.id)
     admin_status = is_admin(message.from_user.id)
-    await message.answer(
+    menu_msg = await message.answer(
         get_text('welcome', lang),
         reply_markup=main_menu_kb(lang, admin_status)
     )
+    db.set_last_menu_message_id(message.from_user.id, menu_msg.message_id)
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: types.CallbackQuery):
@@ -561,6 +562,8 @@ async def start_add_transaction(callback: types.CallbackQuery, state: FSMContext
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
     await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store message ID for editing in subsequent steps
+    await state.update_data(message_id=callback.message.message_id)
     await state.set_state(TransactionStates.waiting_for_amount)
     await callback.answer()
 
@@ -572,19 +575,43 @@ async def process_amount(message: types.Message, state: FSMContext):
     import re
     nums = re.findall(r'\d+', amount_str)
     if not nums:
-        await message.answer(f"{get_text('invalid_amount', lang)}\n\n{get_text('cancel_hint', lang)}")
+        # Delete old message and send new error message
+        data = await state.get_data()
+        old_message_id = data.get('message_id')
+        if old_message_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
+            except Exception:
+                pass  # Ignore if message already deleted
+
+        text = f"{get_text('invalid_amount', lang)}\n\n{get_text('cancel_hint', lang)}"
+        buttons = [
+            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
+        ]
+        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await state.update_data(message_id=new_msg.message_id)
         return
-    
+
     amount = float(nums[0])
     await state.update_data(amount=amount)
-    
+
+    # Delete old message and send new menu
+    data = await state.get_data()
+    old_message_id = data.get('message_id')
+    if old_message_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
+        except Exception:
+            pass  # Ignore if message already deleted
+
     text = f"{get_text('amount_label', lang)}: {amount:,} {get_text('toman', lang)}\n\n{get_text('select_type', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('expense_type', lang), callback_data="type_expense")],
         [InlineKeyboardButton(text=get_text('income_type', lang), callback_data="type_income")],
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.update_data(message_id=new_msg.message_id)
     await state.set_state(TransactionStates.waiting_for_type)
 
 @dp.callback_query(TransactionStates.waiting_for_type)
@@ -687,6 +714,14 @@ async def cancel_transaction(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
     await callback.answer(get_text('cancel', lang))
 
+@dp.callback_query(F.data == "cancel_plan")
+async def cancel_plan(callback: types.CallbackQuery, state: FSMContext):
+    lang = get_user_lang(callback)
+    await state.clear()
+    text = f"{get_text('transaction_cancelled', lang).replace('تراکنش', 'برنامه') if lang == 'fa' else get_text('transaction_cancelled', lang).replace('Transaction', 'Plan')}\n\n{get_text('select_option', lang)}"
+    await safe_edit_text(callback, text, reply_markup=plan_menu_kb(lang))
+    await callback.answer(get_text('cancel', lang))
+
 @dp.callback_query(F.data == "confirm_transaction")
 async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
@@ -760,8 +795,8 @@ async def start_add_category(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
     cat_type = "expense" if callback.data == "add_category_expense" else "income"
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
-    
-    await state.update_data(category_type=cat_type)
+
+    await state.update_data(category_type=cat_type, message_id=callback.message.message_id)
     text = f"➕ {get_text('add_expense_cat', lang) if cat_type == 'expense' else get_text('add_income_cat', lang)}\n\n{get_text('enter_category_name', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
@@ -777,25 +812,55 @@ async def process_category_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     cat_type = data.get('category_type', 'expense')
     category_name = message.text.strip()
-    
+    message_id = data.get('message_id')
+
     if not category_name:
-        await message.answer(get_text('category_empty', lang))
+        # Delete old message and send new error message
+        if message_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+            except Exception:
+                pass  # Ignore if message already deleted
+
+        text = f"{get_text('category_empty', lang)}\n\n{get_text('enter_category_name', lang)}"
+        buttons = [
+            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
+        ]
+        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await state.update_data(message_id=new_msg.message_id)
         return
-    
+
     # Check if category already exists
     existing_cats = db.get_categories(message.from_user.id, cat_type)
     if category_name in existing_cats:
-        await message.answer(get_text('category_exists', lang, name=category_name))
+        # Delete old message and send new error message
+        if message_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+            except Exception:
+                pass  # Ignore if message already deleted
+
+        text = f"{get_text('category_exists', lang, name=category_name)}\n\n{get_text('enter_category_name', lang)}"
+        buttons = [
+            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
+        ]
+        new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await state.update_data(message_id=new_msg.message_id)
         return
-    
+
     # Add the category
     db.add_category(message.from_user.id, category_name, cat_type)
-    
+
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
-    await message.answer(
-        get_text('category_added', lang, name=category_name, type=type_text),
-        reply_markup=finance_menu_kb(lang)
-    )
+    text = get_text('category_added', lang, name=category_name, type=type_text)
+
+    # Delete old message and send success message
+    if message_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+        except Exception:
+            pass  # Ignore if message already deleted
+    await message.answer(text, reply_markup=finance_menu_kb(lang))
     await state.clear()
 
 # Reports
@@ -834,7 +899,13 @@ async def monthly_report(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "add_plan")
 async def start_add_plan(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
-    await callback.message.answer(get_text('enter_plan_title', lang))
+    text = f"{get_text('enter_plan_title', lang)}\n\n{get_text('cancel_hint', lang)}"
+    buttons = [
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
+    ]
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store message ID for editing in subsequent steps
+    await state.update_data(message_id=callback.message.message_id)
     await state.set_state(PlanStates.waiting_for_title)
     await callback.answer()
 
@@ -844,12 +915,24 @@ async def process_plan_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
-    
+
+    # Delete old message and send new menu
+    data = await state.get_data()
+    old_message_id = data.get('message_id')
+    if old_message_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=old_message_id)
+        except Exception:
+            pass  # Ignore if message already deleted
+
+    text = f"{get_text('enter_plan_title', lang).replace(':', '')}: {message.text}\n\n{get_text('select_date', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('today', lang), callback_data=f"pdate_{today}")],
-        [InlineKeyboardButton(text=get_text('tomorrow', lang), callback_data="pdate_tomorrow")]
+        [InlineKeyboardButton(text=get_text('tomorrow', lang), callback_data="pdate_tomorrow")],
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
     ]
-    await message.answer(get_text('select_date', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    new_msg = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.update_data(message_id=new_msg.message_id)
     await state.set_state(PlanStates.waiting_for_date)
 
 @dp.callback_query(PlanStates.waiting_for_date)
@@ -860,11 +943,20 @@ async def process_plan_date(callback: types.CallbackQuery, state: FSMContext):
         p_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     else:
         p_date = callback.data.replace("pdate_", "")
-    
+
     await state.update_data(date=p_date)
+
+    # Get stored data and update message
+    data = await state.get_data()
+    title = data.get('title', '')
+    date_display = p_date
+    text = f"{get_text('enter_plan_title', lang).replace(':', '')}: {title}\n{get_text('date_label', lang)}: {date_display}\n\n{get_text('enter_time', lang)}"
     skip_text = "Skip" if lang == 'en' else "رد کردن"
-    await callback.message.answer(get_text('enter_time', lang), 
-                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=skip_text, callback_data="skip_time")]]))
+    buttons = [
+        [InlineKeyboardButton(text=skip_text, callback_data="skip_time")],
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_plan")]
+    ]
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(PlanStates.waiting_for_time)
     await callback.answer()
 
@@ -876,16 +968,23 @@ async def process_plan_time(event: types.Message | types.CallbackQuery, state: F
         await state.update_data(time=None)
     else:
         await state.update_data(time=event.text)
-    
+
     data = await state.get_data()
     db.add_plan(event.from_user.id, data['title'], data['date'], data.get('time'))
-    
+
     text = get_text('plan_saved', lang)
     if isinstance(event, types.CallbackQuery):
         await safe_edit_text(event, text, reply_markup=planning_menu_kb(lang))
     else:
+        # For message events, delete old message and send new one
+        old_message_id = data.get('message_id')
+        if old_message_id:
+            try:
+                await event.bot.delete_message(chat_id=event.chat.id, message_id=old_message_id)
+            except Exception:
+                pass  # Ignore if message already deleted
         await event.answer(text, reply_markup=planning_menu_kb(lang))
-    
+
     await state.clear()
 
 # View Plans - Helper function
@@ -978,64 +1077,81 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
     lang = get_user_lang(message)
     from datetime import date
     current_date = date.today().strftime("%Y-%m-%d")
-    
+
+    # Delete previous menu if it exists
+    last_menu_id = db.get_last_menu_message_id(message.from_user.id)
+    if last_menu_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=last_menu_id)
+        except Exception:
+            pass  # Ignore if message already deleted
+
     loading_msg = await message.answer(get_text('analyzing', lang))
     try:
         result = await ai_parser.parse_message(message.text, current_date)
         await loading_msg.delete()
-        
+
+        admin_status = is_admin(message.from_user.id)
+
         if result.get("action") == "add_transaction" and result.get("section") == "finance":
             amount = result.get("amount", 0)
             t_type = result.get("type", "expense")
             category = result.get("category", "سایر" if lang == 'fa' else "Other")
             t_date = result.get("date", current_date)
             note = result.get("note", "")
-            
+
             db.add_transaction(message.from_user.id, amount, t_type, category, t_date, note)
-            
+
             type_text = get_text('expense_type', lang) if t_type == "expense" else get_text('income_type', lang)
-            await message.answer(
+            success_msg = await message.answer(
                 f"{get_text('ai_transaction_saved', lang)}\n"
                 f"{get_text('amount_label', lang)}: {amount:,}\n"
                 f"{get_text('type_label', lang)}: {type_text}\n"
                 f"{get_text('category_label', lang)}: {category}\n"
-                f"{get_text('date_label', lang)}: {t_date}"
+                f"{get_text('date_label', lang)}: {t_date}",
+                reply_markup=main_menu_kb(lang, admin_status)
             )
+            db.set_last_menu_message_id(message.from_user.id, success_msg.message_id)
+
         elif result.get("action") == "add_plan" and result.get("section") == "planning":
             title = result.get("title", "بدون عنوان" if lang == 'fa' else "No title")
             p_date = result.get("date", current_date)
             time = result.get("time")
-            
+
             db.add_plan(message.from_user.id, title, p_date, time)
-            
+
             time_display = time or ("نامشخص" if lang == 'fa' else "Not specified")
-            await message.answer(
+            success_msg = await message.answer(
                 f"{get_text('ai_plan_saved', lang)}\n"
                 f"📝 {get_text('enter_plan_title', lang).replace('📝 ', '').replace(':', '')}: {title}\n"
                 f"{get_text('date_label', lang)}: {p_date}\n"
-                f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}"
+                f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}",
+                reply_markup=main_menu_kb(lang, admin_status)
             )
+            db.set_last_menu_message_id(message.from_user.id, success_msg.message_id)
+
         else:
-            admin_status = is_admin(message.from_user.id)
-            await message.answer(
+            menu_msg = await message.answer(
                 get_text('not_understood', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
+            db.set_last_menu_message_id(message.from_user.id, menu_msg.message_id)
+
     except Exception as e:
         if loading_msg:
             await loading_msg.delete()
+        admin_status = is_admin(message.from_user.id)
         if "429" in str(e) or "quota" in str(e).lower():
-            admin_status = is_admin(message.from_user.id)
-            await message.answer(
+            error_msg = await message.answer(
                 get_text('ai_quota_error', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
         else:
-            admin_status = is_admin(message.from_user.id)
-            await message.answer(
+            error_msg = await message.answer(
                 get_text('ai_error', lang),
                 reply_markup=main_menu_kb(lang, admin_status)
             )
+        db.set_last_menu_message_id(message.from_user.id, error_msg.message_id)
 
 # Start polling
 async def main():

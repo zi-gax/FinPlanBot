@@ -24,6 +24,12 @@ class Database:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Add last_menu_message_id column if it doesn't exist (for existing databases)
+        try:
+            self.cursor.execute("ALTER TABLE users ADD COLUMN last_menu_message_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         # Categories table
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -79,6 +85,17 @@ class Database:
     def set_user_language(self, user_id, language):
         """Set user's preferred language."""
         self.cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (language, user_id))
+        self.conn.commit()
+
+    def get_last_menu_message_id(self, user_id):
+        """Get user's last menu message ID."""
+        self.cursor.execute("SELECT last_menu_message_id FROM users WHERE user_id = ?", (user_id,))
+        result = self.cursor.fetchone()
+        return result[0] if result and result[0] else None
+
+    def set_last_menu_message_id(self, user_id, message_id):
+        """Set user's last menu message ID."""
+        self.cursor.execute("UPDATE users SET last_menu_message_id = ? WHERE user_id = ?", (message_id, user_id))
         self.conn.commit()
 
     # Transaction operations
