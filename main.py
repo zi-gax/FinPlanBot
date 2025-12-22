@@ -34,6 +34,9 @@ def is_admin(user_id):
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
+# Suppress AFC (Automatic Function Calling) messages from google-genai
+logging.getLogger('google_genai.models').setLevel(logging.WARNING)
+
 # Initialize bot and dispatcher
 bot = Bot(token=API_token)
 dp = Dispatcher(storage=MemoryStorage())
@@ -138,7 +141,8 @@ async def start_cmd(message: types.Message):
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
     lang = db.get_user_language(message.from_user.id)
     admin_status = is_admin(message.from_user.id)
-    await message.answer(
+    await send_menu_message(
+        message.from_user.id,
         get_text('welcome', lang),
         reply_markup=main_menu_kb(lang, admin_status)
     )
@@ -148,7 +152,7 @@ async def back_to_main(callback: types.CallbackQuery):
     lang = db.get_user_language(callback.from_user.id)
     admin_status = is_admin(callback.from_user.id)
     text = get_text('welcome', lang).split('\n')[1] if '\n' in get_text('welcome', lang) else "بخش مورد نظر را انتخاب کنید:"
-    await safe_edit_text(callback, text, reply_markup=main_menu_kb(lang, admin_status))
+    await send_menu_message(callback.from_user.id, text, reply_markup=main_menu_kb(lang, admin_status))
     await callback.answer()
 
 @dp.callback_query(F.data == "settings")
@@ -171,7 +175,7 @@ async def settings_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
         ]
 
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_panel")
@@ -190,7 +194,7 @@ async def admin_panel(callback: types.CallbackQuery):
     else:
         text = "👑 پنل مدیریت\n\nبه پنل مدیریت خوش آمدید. گزینه مورد نظر را انتخاب کنید:"
 
-    await safe_edit_text(callback, text, reply_markup=admin_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=admin_menu_kb(lang))
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_users")
@@ -207,7 +211,7 @@ async def admin_users(callback: types.CallbackQuery):
 
     if not users:
         text = "👥 لیست کاربران\n\nهیچ کاربری یافت نشد." if lang == 'fa' else "👥 User List\n\nNo users found."
-        await safe_edit_text(callback, text, reply_markup=admin_menu_kb(lang))
+        await send_menu_message(callback.from_user.id, text, reply_markup=admin_menu_kb(lang))
         await callback.answer()
         return
 
@@ -241,7 +245,7 @@ async def admin_users(callback: types.CallbackQuery):
 
     buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
 
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("admin_users_page_"))
@@ -284,7 +288,7 @@ async def admin_users_page(callback: types.CallbackQuery):
 
     buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
 
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_stats")
@@ -330,7 +334,7 @@ async def admin_stats(callback: types.CallbackQuery):
 
     buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
 
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "change_language")
@@ -353,7 +357,7 @@ async def change_language_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
         ]
     
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("set_lang_"))
@@ -378,7 +382,7 @@ async def set_language(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="main_menu")]
         ]
     
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer(get_text('lang_changed', lang))
 
 @dp.callback_query(F.data == "finance_main")
@@ -408,14 +412,14 @@ async def finance_main(callback: types.CallbackQuery, state: FSMContext):
             f"⚖️ مانده: {balance['balance']:,} تومان\n\n"
             "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
         )
-    await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
     await callback.answer()
 
 @dp.callback_query(F.data == "plan_main")
 async def plan_main(callback: types.CallbackQuery):
     lang = get_user_lang(callback)
     text = f"{get_text('planning_main', lang)}\n{get_text('planning_desc', lang)}"
-    await safe_edit_text(callback, text, reply_markup=planning_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=planning_menu_kb(lang))
     await callback.answer()
 
 @dp.callback_query(F.data == "help")
@@ -429,10 +433,10 @@ async def help_cmd(event: types.CallbackQuery | types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     if isinstance(event, types.CallbackQuery):
-        await safe_edit_text(event, help_text, reply_markup=kb)
+        await send_menu_message(event.from_user.id, help_text, reply_markup=kb)
         await event.answer()
     else:
-        await event.answer(help_text, reply_markup=kb)
+        await send_menu_message(event.from_user.id, help_text, reply_markup=kb)
 
 
 # Data Management Handlers
@@ -446,7 +450,7 @@ async def ask_confirm_clear(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=get_text('clear_everything', lang), callback_data="execute_clear_everything")],
         [InlineKeyboardButton(text=get_text('cancel', lang), callback_data="settings")]
     ]
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "execute_clear_everything")
@@ -472,7 +476,7 @@ async def execute_clear_everything(callback: types.CallbackQuery):
         ]
 
     # Show success message briefly, then show settings
-    await safe_edit_text(callback, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "execute_clear_financial")
@@ -498,7 +502,7 @@ async def execute_clear_financial(callback: types.CallbackQuery):
         ]
 
     # Show success message briefly, then show settings
-    await safe_edit_text(callback, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data == "execute_clear_planning")
@@ -524,7 +528,7 @@ async def execute_clear_planning(callback: types.CallbackQuery):
         ]
 
     # Show success message briefly, then show settings
-    await safe_edit_text(callback, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 # Restart functionality removed
@@ -551,6 +555,29 @@ async def safe_edit_text(message_or_callback, text: str, reply_markup=None):
         else:
             # Re-raise if it's a different TelegramBadRequest
             raise
+
+# Helper: Send menu message and manage previous menu deletion
+async def send_menu_message(user_id: int, text: str, reply_markup=None):
+    """Send a menu message, deleting the previous menu message if it exists."""
+    # Get the last menu message ID
+    last_message_id = db.get_last_menu_message_id(user_id)
+
+    # Try to delete the previous menu message if it exists
+    if last_message_id:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=last_message_id)
+        except TelegramBadRequest as e:
+            # Ignore if message was already deleted or doesn't exist
+            if "message to delete not found" not in str(e).lower():
+                logging.debug(f"Could not delete previous menu message: {e}")
+
+    # Send the new menu message
+    sent_message = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+    # Store the new message ID
+    db.set_last_menu_message_id(user_id, sent_message.message_id)
+
+    return sent_message
 
 # Transaction FSM Handlers
 @dp.callback_query(F.data == "add_transaction")
@@ -684,7 +711,7 @@ async def cancel_transaction(callback: types.CallbackQuery, state: FSMContext):
             f"{get_text('balance', lang)}: {balance['balance']:,} {get_text('toman', lang)}\n\n"
             f"{get_text('select_option', lang)}"
         )
-    await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
     await callback.answer(get_text('cancel', lang))
 
 @dp.callback_query(F.data == "confirm_transaction")
@@ -717,7 +744,7 @@ async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
             f"{get_text('expense', lang)}: {balance['expense']:,} {get_text('toman', lang)}\n"
             f"{get_text('balance', lang)}: {balance['balance']:,} {get_text('toman', lang)}"
         )
-    await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
     await state.clear()
     await callback.answer(get_text('done', lang))
 
@@ -751,7 +778,7 @@ async def show_categories(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=get_text('add_income_cat', lang), callback_data="add_category_income")],
         [InlineKeyboardButton(text=get_text('back', lang), callback_data="finance_main")]
     ]
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data.in_(["add_category_expense", "add_category_income"]))
@@ -827,7 +854,7 @@ async def monthly_report(callback: types.CallbackQuery):
             f"{get_text('total_expense', lang)}: {expense:,} {get_text('toman', lang)}\n"
             f"{get_text('balance', lang)}: {income - expense:,} {get_text('toman', lang)}"
         )
-    await safe_edit_text(callback, text, reply_markup=finance_menu_kb(lang))
+    await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
     await callback.answer()
 
 # Planning FSM Handlers
@@ -882,9 +909,9 @@ async def process_plan_time(event: types.Message | types.CallbackQuery, state: F
     
     text = get_text('plan_saved', lang)
     if isinstance(event, types.CallbackQuery):
-        await safe_edit_text(event, text, reply_markup=planning_menu_kb(lang))
+        await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
     else:
-        await event.answer(text, reply_markup=planning_menu_kb(lang))
+        await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
     
     await state.clear()
 
@@ -932,7 +959,7 @@ async def show_plans_view(callback: types.CallbackQuery, view_type: str = None):
         ])
     
     buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="plan_main")])
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @dp.callback_query(F.data.in_(["plans_today", "plans_week"]))
@@ -1010,7 +1037,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                         f"⚖️ مانده: {balance['balance']:,} تومان\n\n"
                         "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
                     )
-                await message.answer(text, reply_markup=finance_menu_kb(lang))
+                await send_menu_message(message.from_user.id, text, reply_markup=finance_menu_kb(lang))
 
             elif action == "add_transaction":
                 # Add transaction directly
@@ -1030,6 +1057,27 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     f"{get_text('category_label', lang)}: {category}\n"
                     f"{get_text('date_label', lang)}: {t_date}"
                 )
+                # Send finance menu after successful transaction
+                balance = db.get_current_month_balance(message.from_user.id)
+                if lang == 'en':
+                    menu_text = (
+                        "💰 Financial Management\n\n"
+                        f"📊 Current Month Status:\n"
+                        f"🔺 Income: {balance['income']:,} Toman\n"
+                        f"🔻 Expense: {balance['expense']:,} Toman\n"
+                        f"⚖️ Balance: {balance['balance']:,} Toman\n\n"
+                        "Please select one of the options below:"
+                    )
+                else:  # Persian
+                    menu_text = (
+                        "💰 بخش مدیریت مالی\n\n"
+                        f"📊 وضعیت ماه جاری:\n"
+                        f"🔺 درآمد: {balance['income']:,} تومان\n"
+                        f"🔻 هزینه: {balance['expense']:,} تومان\n"
+                        f"⚖️ مانده: {balance['balance']:,} تومان\n\n"
+                        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
+                    )
+                await send_menu_message(message.from_user.id, menu_text, reply_markup=finance_menu_kb(lang))
 
             elif action == "monthly_report":
                 # Show monthly report
@@ -1058,7 +1106,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                         f"{get_text('total_expense', lang)}: {expense:,} {get_text('toman', lang)}\n"
                         f"{get_text('balance', lang)}: {income - expense:,} {get_text('toman', lang)}"
                     )
-                await message.answer(text, reply_markup=finance_menu_kb(lang))
+                await send_menu_message(message.from_user.id, text, reply_markup=finance_menu_kb(lang))
 
             elif action == "categories":
                 # Show categories
@@ -1093,7 +1141,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
             if action == "main":
                 # Show planning main menu
                 text = f"{get_text('planning_main', lang)}\n{get_text('planning_desc', lang)}"
-                await message.answer(text, reply_markup=planning_menu_kb(lang))
+                await send_menu_message(message.from_user.id, text, reply_markup=planning_menu_kb(lang))
 
             elif action == "add_plan":
                 # Add plan directly
@@ -1110,6 +1158,9 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     f"{get_text('date_label', lang)}: {p_date}\n"
                     f"⏰ {get_text('enter_time', lang).replace('⏰ ', '').split('(')[0].strip()}: {time_display}"
                 )
+                # Send planning menu after successful plan
+                menu_text = f"{get_text('planning_main', lang)}\n{get_text('planning_desc', lang)}"
+                await send_menu_message(message.from_user.id, menu_text, reply_markup=planning_menu_kb(lang))
 
             elif action == "plans_today":
                 # Show today's plans
@@ -1118,7 +1169,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                 plans = db.get_plans(message.from_user.id, date=today.strftime("%Y-%m-%d"))
 
                 if not plans:
-                    await message.answer(f"{get_text('plans_today_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
+                    await send_menu_message(message.from_user.id, f"{get_text('plans_today_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
                     return
 
                 text = f"{get_text('plans_today_title', lang)}:\n\n"
@@ -1133,7 +1184,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     ])
 
                 buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="plan_main")])
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action == "plans_week":
                 # Show week's plans
@@ -1144,7 +1195,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                 plans = db.get_plans(message.from_user.id, start_date=start_week.strftime("%Y-%m-%d"), end_date=end_week.strftime("%Y-%m-%d"))
 
                 if not plans:
-                    await message.answer(f"{get_text('plans_week_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
+                    await send_menu_message(message.from_user.id, f"{get_text('plans_week_title', lang)}\n{get_text('no_plans', lang)}", reply_markup=planning_menu_kb(lang))
                     return
 
                 text = f"{get_text('plans_week_title', lang)}:\n\n"
@@ -1159,7 +1210,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     ])
 
                 buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="plan_main")])
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
         elif section == "settings":
             if action == "change_language":
@@ -1181,7 +1232,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
                     ]
 
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action == "clear_data":
                 # Show clear data options
@@ -1194,7 +1245,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     [InlineKeyboardButton(text=get_text('clear_everything', lang), callback_data="execute_clear_everything")],
                     [InlineKeyboardButton(text=get_text('cancel', lang), callback_data="settings")]
                 ]
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
         elif section == "help":
             if action == "show":
@@ -1204,7 +1255,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
                 ]
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-                await message.answer(help_text, reply_markup=kb)
+                await send_menu_message(message.from_user.id, help_text, reply_markup=kb)
 
         elif section == "admin":
             if not is_admin(message.from_user.id):
@@ -1217,7 +1268,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
 
                 if not users:
                     text = "👥 لیست کاربران\n\nهیچ کاربری یافت نشد." if lang == 'fa' else "👥 User List\n\nNo users found."
-                    await message.answer(text, reply_markup=admin_menu_kb(lang))
+                    await send_menu_message(message.from_user.id, text, reply_markup=admin_menu_kb(lang))
                     return
 
                 page = 0
@@ -1248,7 +1299,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
 
                 buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
 
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action == "stats":
                 # Show statistics
@@ -1284,39 +1335,27 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     text += f"📂 تعداد کل دسته‌بندی‌ها: {stats['total_categories']:,}\n"
 
                 buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
-                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
         elif action == "main_menu" or (section == "main" and action == "menu"):
             # Show main menu
             admin_status = is_admin(message.from_user.id)
-            await message.answer(
-                get_text('welcome', lang),
-                reply_markup=main_menu_kb(lang, admin_status)
-            )
+            await send_menu_message(message.from_user.id, get_text('welcome', lang), reply_markup=main_menu_kb(lang, admin_status))
 
         else:
             # Fallback to buttons for unrecognized commands
             admin_status = is_admin(message.from_user.id)
-            await message.answer(
-                get_text('not_understood', lang),
-                reply_markup=main_menu_kb(lang, admin_status)
-            )
+            await send_menu_message(message.from_user.id, get_text('not_understood', lang), reply_markup=main_menu_kb(lang, admin_status))
 
     except Exception as e:
         if loading_msg:
             await loading_msg.delete()
         if "429" in str(e) or "quota" in str(e).lower():
             admin_status = is_admin(message.from_user.id)
-            await message.answer(
-                get_text('ai_quota_error', lang),
-                reply_markup=main_menu_kb(lang, admin_status)
-            )
+            await send_menu_message(message.from_user.id, get_text('ai_quota_error', lang), reply_markup=main_menu_kb(lang, admin_status))
         else:
             admin_status = is_admin(message.from_user.id)
-            await message.answer(
-                get_text('ai_error', lang),
-                reply_markup=main_menu_kb(lang, admin_status)
-            )
+            await send_menu_message(message.from_user.id, get_text('ai_error', lang), reply_markup=main_menu_kb(lang, admin_status))
 
 # Start polling
 async def main():
@@ -1363,7 +1402,7 @@ async def main():
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # If stop_event was set, cancel polling_task
+            # If stop_event was set, cancel polling_task and cleanup
             if stop_event.is_set():
                 logging.info("Shutdown requested, cancelling polling task...")
                 polling_task.cancel()
@@ -1371,6 +1410,13 @@ async def main():
                     await polling_task
                 except asyncio.CancelledError:
                     logging.info("Polling task cancelled.")
+
+                # Properly close bot and dispatcher
+                logging.info("Closing bot session...")
+                await bot.session.close()
+                logging.info("Bot shutdown complete.")
+                return  # Exit the function completely, don't retry
+
             break  # Exit retry loop whether polling finished or was cancelled
         except Exception as e:
             error_msg = str(e).lower()
@@ -1381,6 +1427,13 @@ async def main():
                 'dns', 'network', 'connection', 'getaddrinfo', 'cannot connect',
                 'clientconnectordnserror', 'telegramnetworkerror', 'timeout'
             ]) or 'network' in error_type.lower()
+
+            # Check if shutdown was requested during the exception handling
+            if stop_event.is_set():
+                logging.info("Shutdown requested during error recovery, exiting...")
+                await bot.session.close()
+                logging.info("Bot shutdown complete.")
+                return
 
             if is_network_error:
                 if attempt < max_retries - 1:
@@ -1402,11 +1455,22 @@ async def main():
                 logging.error(f"Failed to start polling (non-network error): {e}")
                 raise
 
+async def cleanup_bot():
+    """Cleanup bot resources."""
+    try:
+        if hasattr(bot, 'session') and bot.session:
+            await bot.session.close()
+            logging.info("Bot session closed.")
+    except Exception as e:
+        logging.error(f"Error closing bot session: {e}")
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped.")
+        # Ensure cleanup on keyboard interrupt
+        asyncio.run(cleanup_bot())
     except Exception as e:
         error_msg = str(e).lower()
         if any(keyword in error_msg for keyword in ['dns', 'network', 'connection', 'getaddrinfo', 'cannot connect']):
@@ -1425,6 +1489,13 @@ if __name__ == "__main__":
             )
         else:
             logging.error(f"Fatal error: {e}", exc_info=True)
+
+        # Ensure cleanup on fatal error
+        try:
+            asyncio.run(cleanup_bot())
+        except Exception:
+            pass  # Ignore cleanup errors during fatal shutdown
+
         # Give time for error logging before exit
         import time
         time.sleep(2)

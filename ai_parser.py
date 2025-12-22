@@ -1,6 +1,6 @@
 import json
 import asyncio
-from config import GEMINI_API_KEY
+from config import GEMINI_API_KEYS
 
 
 class AIParser:
@@ -15,8 +15,61 @@ class AIParser:
         # Do NOT create the client at import time. Defer client creation to first use
         # to avoid any potential blocking network calls during module import.
         self.client = None
+        self.current_api_key_index = 0  # Index of current API key being used
+        self.failed_keys = set()  # Set of API key indices that have failed
 
         self.model_name = 'gemini-flash-latest'
+
+    async def _create_client_with_failover(self):
+        """Try to create a client with available API keys, skipping failed ones."""
+        if not self.genai or not GEMINI_API_KEYS:
+            return None
+
+        # Try each available API key
+        for attempt in range(len(GEMINI_API_KEYS)):
+            api_key_index = (self.current_api_key_index + attempt) % len(GEMINI_API_KEYS)
+
+            # Skip keys that have failed before
+            if api_key_index in self.failed_keys:
+                continue
+
+            api_key = GEMINI_API_KEYS[api_key_index]
+
+            def create_client(key):
+                try:
+                    return self.genai.Client(api_key=key)
+                except Exception as e:
+                    print(f"Failed to create client with API key {api_key_index}: {e}")
+                    return None
+
+            client = await asyncio.to_thread(create_client, api_key)
+            if client:
+                self.current_api_key_index = api_key_index
+                print(f"Successfully created client with API key {api_key_index}")
+                return client
+            else:
+                # Mark this key as failed
+                self.failed_keys.add(api_key_index)
+
+        return None
+
+    async def _switch_to_next_api_key(self):
+        """Switch to the next available API key and recreate client."""
+        # Mark current key as failed
+        self.failed_keys.add(self.current_api_key_index)
+
+        # Find next available key
+        for attempt in range(len(GEMINI_API_KEYS)):
+            next_index = (self.current_api_key_index + attempt + 1) % len(GEMINI_API_KEYS)
+            if next_index not in self.failed_keys:
+                self.current_api_key_index = next_index
+                print(f"Switching to API key {next_index}")
+
+                # Try to create client with new key
+                self.client = await self._create_client_with_failover()
+                return self.client is not None
+
+        return False  # No available keys
 
     async def parse_message(self, text, current_date):
         prompt = f"""
@@ -128,13 +181,8 @@ class AIParser:
             # Lazily create the client if possible. Creating the client may do network
             # operations depending on the library; perform creation in a thread to
             # avoid blocking the event loop.
-            if not self.client and self.genai and GEMINI_API_KEY:
-                def create_client():
-                    try:
-                        return self.genai.Client(api_key=GEMINI_API_KEY)
-                    except Exception:
-                        return None
-                self.client = await asyncio.to_thread(create_client)
+            if not self.client and self.genai and GEMINI_API_KEYS:
+                self.client = await self._create_client_with_failover()
 
             # If client is still not available, return fallback so bot can continue operating
             if not self.client:
@@ -159,8 +207,20 @@ class AIParser:
             
             return json.loads(result)
         except Exception as e:
-            print(f"AI Parsing error: {e}")
-            return {"action": "fallback_to_buttons"}
+            error_str = str(e).lower()
+            # Check if this is a quota/rate limit error and try failover
+            if any(keyword in error_str for keyword in ['quota', 'rate limit', '429', 'resource exhausted']):
+                print(f"API quota/rate limit error with key {self.current_api_key_index}: {e}")
+                # Mark current key as failed and try to switch to another key
+                if await self._switch_to_next_api_key():
+                    # Retry with the new key
+                    return await self.parse_message(text, current_date)
+                else:
+                    print("All API keys have failed due to quota limits")
+                    return {"action": "fallback_to_buttons"}
+            else:
+                print(f"AI Parsing error: {e}")
+                return {"action": "fallback_to_buttons"}
 
 # Singleton instance
 ai_parser = AIParser()
