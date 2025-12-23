@@ -361,6 +361,25 @@ class Database:
         self.cursor.execute("INSERT INTO categories (user_id, name, type) VALUES (?, ?, ?)", (user_id, name, type))
         self.conn.commit()
 
+    def update_category(self, user_id, old_name, new_name, type):
+        """Update category name."""
+        self.cursor.execute("""
+            UPDATE categories
+            SET name = ?
+            WHERE user_id = ? AND name = ? AND type = ?
+        """, (new_name, user_id, old_name, type))
+        self.conn.commit()
+        return self.cursor.rowcount > 0
+
+    def delete_category(self, user_id, name, type):
+        """Delete a category."""
+        self.cursor.execute("""
+            DELETE FROM categories
+            WHERE user_id = ? AND name = ? AND type = ?
+        """, (user_id, name, type))
+        self.conn.commit()
+        return self.cursor.rowcount > 0
+
     def clear_user_data(self, user_id):
         """Removes all transactions and plans for a specific user."""
         # Reset card/source balances to 0 first

@@ -50,3 +50,6 @@ uritemplate==4.2.0
 urllib3==2.6.2
 websockets==15.0.1
 yarl==1.22.0
+pandas==2.2.3
+openpyxl==3.1.5
+reportlab==4.2.5

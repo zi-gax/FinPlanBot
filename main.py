@@ -47,6 +47,7 @@ class TransactionStates(StatesGroup):
     waiting_for_description = State()
     waiting_for_type = State()
     waiting_for_category = State()
+    waiting_for_custom_category = State()
     waiting_for_note = State()  # Keep for backward compatibility
 
 class PlanStates(StatesGroup):
@@ -56,6 +57,7 @@ class PlanStates(StatesGroup):
 
 class CategoryStates(StatesGroup):
     waiting_for_category_name = State()
+    waiting_for_category_edit = State()
 
 class CardSourceStates(StatesGroup):
     waiting_for_source_name = State()
@@ -66,6 +68,7 @@ class CardSourceStates(StatesGroup):
 class CustomReportStates(StatesGroup):
     waiting_for_start_date = State()
     waiting_for_end_date = State()
+    viewing_paginated_report = State()
 
 # Keyboards
 def main_menu_kb(lang='fa', is_admin=False):
@@ -203,8 +206,18 @@ async def financial_settings_menu(callback: types.CallbackQuery):
 
 # Card/Source Management Handlers
 @dp.callback_query(F.data == "manage_cards_sources")
-async def manage_cards_sources_menu(callback: types.CallbackQuery):
+async def manage_cards_sources_menu(callback: types.CallbackQuery, state: FSMContext):
     """Show card/source management menu."""
+    # Clear any leftover transaction state and messages when entering manage cards
+    data = await state.get_data()
+    message_ids = data.get('message_ids', [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=callback.from_user.id, message_id=message_id)
+        except Exception as e:
+            # Ignore errors if message doesn't exist or can't be deleted
+            logging.debug(f"Could not delete leftover transaction message {message_id}: {e}")
+    await state.clear()
     lang = db.get_user_language(callback.from_user.id)
     cards_sources = db.get_cards_sources(callback.from_user.id)
 
@@ -346,7 +359,7 @@ async def process_card_number_finish(event, state: FSMContext, card_number):
 
     # Return to card/source management menu
     if is_callback:
-        await manage_cards_sources_menu(event)
+        await manage_cards_sources_menu(event, state)
     else:
         # For message events, create a fake callback query
         fake_callback = types.CallbackQuery(
@@ -356,7 +369,7 @@ async def process_card_number_finish(event, state: FSMContext, card_number):
             data="manage_cards_sources",
             chat_instance="fake"
         )
-        await manage_cards_sources_menu(fake_callback)
+        await manage_cards_sources_menu(fake_callback, state)
 
 @dp.callback_query(F.data.startswith("edit_card_"))
 async def edit_card_source_menu(callback: types.CallbackQuery):
@@ -1078,6 +1091,16 @@ async def process_card_source(callback: types.CallbackQuery, state: FSMContext):
     card_source = db.get_card_source(card_id)
     if not card_source or card_source[0] != card_id:  # Check if card exists and belongs to user
         await callback.answer(get_text('error', lang), show_alert=True)
+        # Clear transaction state and clean up messages when card is not found
+        data = await state.get_data()
+        message_ids = data.get('message_ids', [])
+        for message_id in message_ids:
+            try:
+                await bot.delete_message(chat_id=callback.from_user.id, message_id=message_id)
+            except Exception as e:
+                # Ignore errors if message doesn't exist or can't be deleted
+                logging.debug(f"Could not delete transaction message {message_id}: {e}")
+        await state.clear()
         return
 
     await state.update_data(card_source_id=card_id)
@@ -1268,6 +1291,7 @@ async def process_type(callback: types.CallbackQuery, state: FSMContext):
     text += f"{get_text('select_category', lang)}"
 
     buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}")] for cat in categories]
+    buttons.append([InlineKeyboardButton(text=get_text('type_custom_category', lang), callback_data="type_custom_category")])
     buttons.append([InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")])
     await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(TransactionStates.waiting_for_category)
@@ -1369,6 +1393,74 @@ async def quick_transaction_start(callback: types.CallbackQuery, state: FSMConte
     await state.set_state(TransactionStates.waiting_for_amount)
     await callback.answer()
 
+@dp.callback_query(F.data == "type_custom_category")
+async def start_custom_category_input(callback: types.CallbackQuery, state: FSMContext):
+    """Allow user to type a custom category name."""
+    lang = get_user_lang(callback)
+
+    data = await state.get_data()
+    t_type = data.get('type', 'expense')
+    type_text = get_text('expense_type', lang) if t_type == 'expense' else get_text('income_type', lang)
+
+    text = f"{get_text('select_category', lang)}\n\n{type_text}\n\n{get_text('enter_custom_category_name', lang)}"
+
+    buttons = [
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
+    ]
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(TransactionStates.waiting_for_custom_category)
+    await callback.answer()
+
+@dp.message(TransactionStates.waiting_for_custom_category)
+async def process_custom_category(message: types.Message, state: FSMContext):
+    """Process the custom category name and create it if needed."""
+    lang = db.get_user_language(message.from_user.id)
+    category_name = message.text.strip()
+
+    if not category_name:
+        await message.answer(get_text('category_empty', lang))
+        return
+
+    data = await state.get_data()
+    t_type = data.get('type', 'expense')
+
+    # Check if category already exists, if not, create it
+    existing_cats = db.get_categories(message.from_user.id, t_type)
+    if category_name not in existing_cats:
+        db.add_category(message.from_user.id, category_name, t_type)
+
+    # Now proceed with this category
+    await state.update_data(category=category_name)
+
+    currency_display = get_text('toman', lang) if data['currency'] == 'toman' else get_text('dollar', lang)
+    type_text = get_text('expense_type', lang) if t_type == 'expense' else get_text('income_type', lang)
+    card_source = db.get_card_source(data['card_source_id'])
+
+    summary = f"{get_text('confirm_transaction', lang)}\n\n"
+    # Format date for display
+    settings = db.get_user_settings(message.from_user.id)
+    display_date = format_date_for_display(data['date'], settings['calendar_format'], lang)
+
+    summary += f"{get_text('amount_label', lang)}: {data['amount']:,} {currency_display}\n"
+    summary += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
+    summary += f"{get_text('currency_label', lang)}: {currency_display}\n"
+    summary += f"{get_text('type_label', lang)}: {type_text}\n"
+    summary += f"{get_text('category_label', lang)}: {category_name}\n"
+    summary += f"{get_text('date_label', lang)}: {display_date}\n"
+    if data.get('description'):
+        summary += f"{get_text('description_label', lang)}: {data['description']}\n"
+    summary += f"\n{get_text('confirm_question', lang)}"
+
+    buttons = [
+        [InlineKeyboardButton(text=get_text('confirm_btn', lang), callback_data="confirm_transaction")],
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
+    ]
+
+    await message.answer(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Change state to None so process_category won't catch confirm_transaction callback
+    await state.set_state(None)
+
 @dp.callback_query(F.data == "confirm_transaction")
 async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
@@ -1432,31 +1524,68 @@ async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
 async def show_categories(callback: types.CallbackQuery):
     """Show user's expense and income categories."""
     lang = get_user_lang(callback)
-    expense_cats = db.get_categories(callback.from_user.id, "expense")
-    income_cats = db.get_categories(callback.from_user.id, "income")
-    
+
+    # Get categories with IDs
+    expense_cats = db.cursor.execute("""
+        SELECT id, name FROM categories
+        WHERE user_id = ? AND type = 'expense'
+        ORDER BY name
+    """, (callback.from_user.id,)).fetchall()
+
+    income_cats = db.cursor.execute("""
+        SELECT id, name FROM categories
+        WHERE user_id = ? AND type = 'income'
+        ORDER BY name
+    """, (callback.from_user.id,)).fetchall()
+
     text = f"{get_text('your_categories', lang)}\n\n"
-    
+
+    buttons = []
+
+    # Expense categories section
     if expense_cats:
         text += f"{get_text('expenses', lang)}\n"
-        for i, cat in enumerate(expense_cats, 1):
-            text += f"{i}. {cat}\n"
+        for cat_id, cat_name in expense_cats:
+            text += f"• {cat_name}\n"
+            # Add edit and delete buttons for each category
+            buttons.append([
+                InlineKeyboardButton(text=f"✏️ {cat_name}", callback_data=f"edit_cat_{cat_id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"delete_cat_{cat_id}")
+            ])
         text += "\n"
     else:
         text += f"{get_text('expenses', lang)} {get_text('no_category', lang)}\n\n"
-    
+
+    # Add visual separator between expense and income categories if both exist
+    if expense_cats and income_cats:
+        buttons.append([InlineKeyboardButton(text="━━━━━━━━━━━━━━━━━━━━━━━━━━━", callback_data="separator")])
+
+    # Income categories section
     if income_cats:
         text += f"{get_text('incomes', lang)}\n"
-        for i, cat in enumerate(income_cats, 1):
-            text += f"{i}. {cat}\n"
+        for cat_id, cat_name in income_cats:
+            text += f"• {cat_name}\n"
+            # Add edit and delete buttons for each category
+            buttons.append([
+                InlineKeyboardButton(text=f"✏️ {cat_name}", callback_data=f"edit_cat_{cat_id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"delete_cat_{cat_id}")
+            ])
     else:
         text += f"{get_text('incomes', lang)} {get_text('no_category', lang)}"
-    
-    buttons = [
+
+    # Add buttons for creating new categories and going back
+    buttons.extend([
         [InlineKeyboardButton(text=get_text('add_expense_cat', lang), callback_data="add_category_expense")],
         [InlineKeyboardButton(text=get_text('add_income_cat', lang), callback_data="add_category_income")],
         [InlineKeyboardButton(text=get_text('back', lang), callback_data="finance_main")]
-    ]
+    ])
+
+    # Delete the current message and send new categories menu
+    try:
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+    except Exception:
+        pass  # Ignore if message was already deleted
+
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -1466,13 +1595,23 @@ async def start_add_category(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
     cat_type = "expense" if callback.data == "add_category_expense" else "income"
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
-    
+
     await state.update_data(category_type=cat_type)
     text = f"➕ {get_text('add_expense_cat', lang) if cat_type == 'expense' else get_text('add_income_cat', lang)}\n\n{get_text('enter_category_name', lang)}"
     buttons = [
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
     ]
-    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    # Delete the original categories menu message
+    try:
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+    except Exception:
+        pass  # Ignore if message was already deleted
+
+    # Send new message instead of editing
+    sent_message = await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store the message ID to delete it later
+    await state.update_data(prompt_message_id=sent_message.message_id)
     await state.set_state(CategoryStates.waiting_for_category_name)
     await callback.answer()
 
@@ -1496,13 +1635,803 @@ async def process_category_name(message: types.Message, state: FSMContext):
     
     # Add the category
     db.add_category(message.from_user.id, category_name, cat_type)
-    
+
+    # Delete the prompt message
+    data = await state.get_data()
+    prompt_message_id = data.get('prompt_message_id')
+    if prompt_message_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
+        except Exception:
+            pass  # Ignore if message was already deleted
+
     type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
     await message.answer(
         get_text('category_added', lang, name=category_name, type=type_text),
-        reply_markup=finance_menu_kb(lang)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="categories")]
+        ])
     )
     await state.clear()
+
+@dp.callback_query(F.data.startswith("edit_cat_"))
+async def start_edit_category(callback: types.CallbackQuery, state: FSMContext):
+    """Start editing a category."""
+    lang = get_user_lang(callback)
+    data_parts = callback.data.split("_", 2)  # edit_cat_{id}
+
+    if len(data_parts) < 2:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_id = int(data_parts[2])
+
+    # Get category info from database
+    category = db.cursor.execute("""
+        SELECT name, type FROM categories WHERE id = ? AND user_id = ?
+    """, (cat_id, callback.from_user.id)).fetchone()
+
+    if not category:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_name, cat_type = category
+
+    # Store the old category info
+    await state.update_data(edit_category_id=cat_id, edit_category_old_name=cat_name, edit_category_type=cat_type)
+
+    type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+    text = f"✏️ {get_text('edit_category', lang, name=cat_name, type=type_text)}\n\n{get_text('enter_new_category_name', lang)}"
+
+    buttons = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]]
+
+    # Delete the original categories menu message
+    try:
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+    except Exception:
+        pass  # Ignore if message was already deleted
+
+    # Send new message instead of editing
+    sent_message = await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store the message ID to delete it later
+    await state.update_data(prompt_message_id=sent_message.message_id)
+    await state.set_state(CategoryStates.waiting_for_category_edit)
+    await callback.answer()
+
+@dp.message(CategoryStates.waiting_for_category_edit)
+async def process_edit_category_name(message: types.Message, state: FSMContext):
+    """Process the edited category name."""
+    lang = db.get_user_language(message.from_user.id)
+    data = await state.get_data()
+    cat_id = data.get('edit_category_id')
+    cat_type = data.get('edit_category_type')
+    old_name = data.get('edit_category_old_name')
+    new_name = message.text.strip()
+
+    if not new_name:
+        await message.answer(get_text('category_empty', lang))
+        return
+
+    # Check if the new name already exists (but allow if it's the same as old name)
+    if new_name != old_name:
+        existing_cats = db.get_categories(message.from_user.id, cat_type)
+        if new_name in existing_cats:
+            await message.answer(get_text('category_exists', lang, name=new_name))
+            return
+
+    # Update the category
+    if db.update_category(message.from_user.id, old_name, new_name, cat_type):
+        # Delete the prompt message
+        prompt_message_id = data.get('prompt_message_id')
+        if prompt_message_id:
+            try:
+                await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
+            except Exception:
+                pass  # Ignore if message was already deleted
+
+        type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+        await message.answer(
+            get_text('category_updated', lang, old_name=old_name, new_name=new_name, type=type_text),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=get_text('back', lang), callback_data="categories")]
+            ])
+        )
+    else:
+        await message.answer(get_text('error', lang))
+
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("delete_cat_"))
+async def confirm_delete_category(callback: types.CallbackQuery):
+    """Confirm deletion of a category."""
+    lang = get_user_lang(callback)
+    data_parts = callback.data.split("_", 2)  # delete_cat_{id}
+
+    if len(data_parts) < 2:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_id = int(data_parts[2])
+
+    # Get category info from database
+    category = db.cursor.execute("""
+        SELECT name, type FROM categories WHERE id = ? AND user_id = ?
+    """, (cat_id, callback.from_user.id)).fetchone()
+
+    if not category:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_name, cat_type = category
+
+    type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+    text = get_text('confirm_delete_category', lang, name=cat_name, type=type_text)
+
+    buttons = [
+        [InlineKeyboardButton(text=get_text('confirm_btn', lang), callback_data=f"confirm_delete_cat_{cat_id}")],
+        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
+    ]
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("confirm_delete_cat_"))
+async def process_delete_category(callback: types.CallbackQuery):
+    """Process category deletion."""
+    lang = get_user_lang(callback)
+    data_parts = callback.data.split("_", 3)  # confirm_delete_cat_{id}
+
+    if len(data_parts) < 3:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_id = int(data_parts[3])
+
+    # Get category info from database
+    category = db.cursor.execute("""
+        SELECT name, type FROM categories WHERE id = ? AND user_id = ?
+    """, (cat_id, callback.from_user.id)).fetchone()
+
+    if not category:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_name, cat_type = category
+
+    # Check if category is used in transactions
+    db.cursor.execute("""
+        SELECT COUNT(*) FROM transactions
+        WHERE user_id = ? AND category = ?
+    """, (callback.from_user.id, cat_name))
+    transaction_count = db.cursor.fetchone()[0]
+
+    if transaction_count > 0:
+        # Category is used in transactions, show warning
+        type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+        text = get_text('category_in_use', lang, name=cat_name, count=transaction_count, type=type_text)
+        buttons = [
+            [InlineKeyboardButton(text=get_text('force_delete', lang), callback_data=f"force_delete_cat_{cat_id}")],
+            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="categories")]
+        ]
+        await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        # Safe to delete
+        if db.delete_category(callback.from_user.id, cat_name, cat_type):
+            type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+            text = get_text('category_deleted', lang, name=cat_name, type=type_text)
+            buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="categories")]]
+            await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        else:
+            await callback.answer(get_text('error', lang), show_alert=True)
+
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("force_delete_cat_"))
+async def force_delete_category(callback: types.CallbackQuery):
+    """Force delete a category even if it's used in transactions."""
+    lang = get_user_lang(callback)
+    data_parts = callback.data.split("_", 3)  # force_delete_cat_{id}
+
+    if len(data_parts) < 3:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_id = int(data_parts[3])
+
+    # Get category info from database
+    category = db.cursor.execute("""
+        SELECT name, type FROM categories WHERE id = ? AND user_id = ?
+    """, (cat_id, callback.from_user.id)).fetchone()
+
+    if not category:
+        await callback.answer(get_text('error', lang), show_alert=True)
+        return
+
+    cat_name, cat_type = category
+
+    if db.delete_category(callback.from_user.id, cat_name, cat_type):
+        type_text = get_text('expense_type', lang) if cat_type == "expense" else get_text('income_type', lang)
+        text = get_text('category_deleted', lang, name=cat_name, type=type_text)
+        buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="categories")]]
+        await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        await callback.answer(get_text('error', lang), show_alert=True)
+
+    await callback.answer()
+
+# Report Helper Functions
+def format_transactions_page(transactions, page, per_page, lang, currency, settings, start_idx=None):
+    """Format transactions for a specific page with pagination info."""
+    total_transactions = len(transactions)
+    total_pages = (total_transactions + per_page - 1) // per_page  # Ceiling division
+
+    if page < 1:
+        page = 1
+    if page > total_pages:
+        page = total_pages
+
+    start_idx = (page - 1) * per_page
+    end_idx = min(start_idx + per_page, total_transactions)
+    page_transactions = transactions[start_idx:end_idx]
+
+    text = ""
+    for i, transaction in enumerate(page_transactions, start=start_idx + 1):
+        trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
+
+        # Handle potential None values
+        amount = amount or 0
+        category = category or ("نامشخص" if lang == 'fa' else "Unknown")
+        trans_type = trans_type or "expense"
+
+        type_emoji = "🔼" if trans_type == "income" else "🔻"
+        card_display = card_name or ("نامشخص" if lang == 'fa' else "Unknown")
+        if card_number and len(card_number) >= 4:
+            card_display += f" (****{card_number[-4:]})"
+
+        # Format date for display
+        display_date = format_date_for_display(trans_date, settings['calendar_format'], lang)
+
+        text += f"{type_emoji} {amount:,} {currency} - {category} - {card_display} - {display_date}\n"
+        if note:
+            text += f"   💬 {note}\n"
+
+    # Add pagination info
+    if total_pages > 1:
+        page_info = get_text('page_info', lang, current=page, total=total_pages)
+        text += f"\n{page_info}"
+
+    return text, total_pages, start_idx, end_idx, total_transactions
+
+def create_pagination_buttons(page, total_pages, range_type, lang, extra_data=""):
+    """Create pagination buttons for reports."""
+    buttons = []
+
+    # Navigation row
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(
+            text=get_text('previous_page', lang),
+            callback_data=f"report_page_{page-1}_{range_type}{extra_data}"
+        ))
+
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton(
+            text=get_text('next_page', lang),
+            callback_data=f"report_page_{page+1}_{range_type}{extra_data}"
+        ))
+
+    if nav_buttons:
+        buttons.append(nav_buttons)
+
+    # Back button
+    buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")])
+
+    return buttons
+
+# Export Functions
+async def generate_export_file(user_id: int, range_type: str, export_format: str, lang: str,
+                              start_date_str: str = None, end_date_str: str = None,
+                              start_date_display: str = None, end_date_display: str = None) -> str:
+    """Generate export file in the specified format and return file path."""
+    import tempfile
+    import os
+    from datetime import date, timedelta, datetime
+
+    # Get date range
+    today = date.today()
+    if range_type == "custom":
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        range_text = f"Custom Range ({start_date_display} to {end_date_display})"
+    else:
+        if range_type == "overall":
+            start_date = date(2000, 1, 1)
+            end_date = today
+            range_text = "Overall Report"
+        elif range_type == "day":
+            start_date = today
+            end_date = today
+            range_text = "Today"
+        elif range_type == "week":
+            start_date = today - timedelta(days=6)
+            end_date = today
+            range_text = "This Week"
+        elif range_type == "month":
+            start_date = today.replace(day=1)
+            end_date = today
+            range_text = "This Month"
+        elif range_type == "year":
+            start_date = today.replace(month=1, day=1)
+            end_date = today
+            range_text = "This Year"
+
+    # Get data from database
+    balance_report = db.get_balance_report(user_id, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    card_balances = db.get_card_source_balances_in_range(user_id, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    transactions = db.get_transactions_in_range(user_id, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    settings = db.get_user_settings(user_id)
+
+    # Create temporary file with correct extension
+    if export_format == 'excel':
+        suffix = '.xlsx'
+    elif export_format == 'pdf':
+        suffix = '.pdf'
+    elif export_format == 'csv':
+        suffix = '.csv'
+    else:
+        suffix = f'.{export_format}'
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        file_path = temp_file.name
+
+    try:
+        if export_format == 'csv':
+            generate_csv_export(file_path, balance_report, card_balances, transactions, range_text, settings, lang)
+        elif export_format == 'excel':
+            generate_excel_export(file_path, balance_report, card_balances, transactions, range_text, settings, lang)
+        elif export_format == 'pdf':
+            generate_pdf_export(file_path, balance_report, card_balances, transactions, range_text, settings, lang)
+        return file_path
+    except Exception as e:
+        # Clean up on error
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise e
+
+def generate_csv_export(file_path: str, balance_report: dict, card_balances: list,
+                             transactions: list, range_text: str, settings: dict, lang: str):
+    """Generate CSV export file."""
+    import csv
+
+    with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+        writer = csv.writer(csvfile)
+
+        # Write report header
+        writer.writerow([get_text('reporting_title', lang) + f" - {range_text}"])
+        writer.writerow([])
+
+        # Write financial summary section
+        writer.writerow(["FINANCIAL SUMMARY"])
+        currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
+        writer.writerow(['Metric' if lang == 'en' else 'متریک', 'Value' if lang == 'en' else 'مقدار'])
+        writer.writerow([get_text('amount_earned', lang), f"{balance_report['income'] or 0:,} {currency}"])
+        writer.writerow([get_text('amount_spent', lang), f"{balance_report['expense'] or 0:,} {currency}"])
+        writer.writerow([get_text('current_balance', lang), f"{balance_report['balance'] or 0:,} {currency}"])
+        writer.writerow([])
+
+        # Write card/source balances section
+        if card_balances:
+            writer.writerow(["CARD/SOURCE BALANCES"])
+            headers = ['Card/Source' if lang == 'en' else 'کارت/منبع',
+                      'Start Balance' if lang == 'en' else 'موجودی اولیه',
+                      'Net Change' if lang == 'en' else 'تغییر خالص',
+                      'End Balance' if lang == 'en' else 'موجودی نهایی']
+            writer.writerow(headers)
+
+            for card in card_balances:
+                card_display = card['name'] or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card['card_number'] and len(card['card_number']) >= 4:
+                    card_display += f" (****{card['card_number'][-4:]})"
+                writer.writerow([
+                    card_display,
+                    card['start_balance'] or 0,
+                    card['net_change'] or 0,
+                    card['end_balance'] or 0
+                ])
+            writer.writerow([])
+
+        # Write transactions section
+        if transactions:
+            writer.writerow(["TRANSACTIONS"])
+            headers = ['Date' if lang == 'en' else 'تاریخ',
+                      'Type' if lang == 'en' else 'نوع',
+                      'Category' if lang == 'en' else 'دسته',
+                      'Amount' if lang == 'en' else 'مبلغ',
+                      'Currency' if lang == 'en' else 'ارز',
+                      'Card/Source' if lang == 'en' else 'کارت/منبع',
+                      'Note' if lang == 'en' else 'توضیحات']
+            writer.writerow(headers)
+
+            for transaction in transactions:
+                trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
+
+                type_text = "درآمد" if trans_type == "income" and lang == 'fa' else ("هزینه" if trans_type == "expense" and lang == 'fa' else ("Income" if trans_type == "income" else "Expense"))
+                category = category or ("نامشخص" if lang == 'fa' else "Unknown")
+                card_display = card_name or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card_number and len(card_number) >= 4:
+                    card_display += f" (****{card_number[-4:]})"
+
+                writer.writerow([
+                    trans_date,
+                    type_text,
+                    category,
+                    amount or 0,
+                    trans_currency or settings['currency'],
+                    card_display,
+                    note or ""
+                ])
+
+def generate_excel_export(file_path: str, balance_report: dict, card_balances: list,
+                               transactions: list, range_text: str, settings: dict, lang: str):
+    """Generate Excel export file."""
+    import pandas as pd
+
+    # Create Excel writer
+    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+        # Summary sheet - clean financial overview
+        currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
+        summary_data = [
+            {'Metric' if lang == 'en' else 'متریک': get_text('amount_earned', lang),
+             'Value' if lang == 'en' else 'مقدار': f"{balance_report['income'] or 0:,} {currency}"},
+            {'Metric' if lang == 'en' else 'متریک': get_text('amount_spent', lang),
+             'Value' if lang == 'en' else 'مقدار': f"{balance_report['expense'] or 0:,} {currency}"},
+            {'Metric' if lang == 'en' else 'متریک': get_text('current_balance', lang),
+             'Value' if lang == 'en' else 'مقدار': f"{balance_report['balance'] or 0:,} {currency}"}
+        ]
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary' if lang == 'en' else 'خلاصه', index=False)
+
+        # Card balances sheet
+        if card_balances:
+            card_data = []
+            for card in card_balances:
+                card_display = card['name'] or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card['card_number'] and len(card['card_number']) >= 4:
+                    card_display += f" (****{card['card_number'][-4:]})"
+                card_data.append({
+                    'Card/Source' if lang == 'en' else 'کارت/منبع': card_display,
+                    'Start Balance' if lang == 'en' else 'موجودی اولیه': card['start_balance'] or 0,
+                    'Net Change' if lang == 'en' else 'تغییر خالص': card['net_change'] or 0,
+                    'End Balance' if lang == 'en' else 'موجودی نهایی': card['end_balance'] or 0
+                })
+            card_df = pd.DataFrame(card_data)
+            card_df.to_excel(writer, sheet_name='Cards' if lang == 'en' else 'کارت‌ها', index=False)
+
+        # Transactions sheet
+        if transactions:
+            transaction_data = []
+            for transaction in transactions:
+                trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
+
+                type_text = "درآمد" if trans_type == "income" and lang == 'fa' else ("هزینه" if trans_type == "expense" and lang == 'fa' else ("Income" if trans_type == "income" else "Expense"))
+                category = category or ("نامشخص" if lang == 'fa' else "Unknown")
+                card_display = card_name or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card_number and len(card_number) >= 4:
+                    card_display += f" (****{card_number[-4:]})"
+
+                transaction_data.append({
+                    'Date' if lang == 'en' else 'تاریخ': trans_date,
+                    'Type' if lang == 'en' else 'نوع': type_text,
+                    'Category' if lang == 'en' else 'دسته': category,
+                    'Amount' if lang == 'en' else 'مبلغ': amount or 0,
+                    'Currency' if lang == 'en' else 'ارز': trans_currency or settings['currency'],
+                    'Card/Source' if lang == 'en' else 'کارت/منبع': card_display,
+                    'Note' if lang == 'en' else 'توضیحات': note or ""
+                })
+            trans_df = pd.DataFrame(transaction_data)
+            trans_df.to_excel(writer, sheet_name='Transactions' if lang == 'en' else 'تراکنش‌ها', index=False)
+
+def generate_pdf_export(file_path: str, balance_report: dict, card_balances: list,
+                             transactions: list, range_text: str, settings: dict, lang: str):
+    """Generate PDF export file in a report-style format (no tables)."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    # Create PDF document with proper Unicode support for Persian
+    from reportlab.lib.pagesizes import A4
+
+    # Set up document with explicit Unicode support
+    doc = SimpleDocTemplate(file_path,
+                           pagesize=A4,
+                           rightMargin=40,
+                           leftMargin=40,
+                           topMargin=40,
+                           bottomMargin=40,
+                           encoding='utf-8')
+
+    styles = getSampleStyleSheet()
+
+    # Enable full Unicode support for Persian characters
+    from reportlab.pdfbase import pdfdoc
+    from reportlab.pdfbase import pdfmetrics
+
+    # Set Unicode encoding for proper Persian character support
+    pdfdoc.unicode = True
+
+    # Configure PDF for Unicode text rendering
+    try:
+        # Ensure proper encoding setup
+        import locale
+        try:
+            # Try Persian locale if available
+            locale.setlocale(locale.LC_ALL, 'fa_IR.UTF-8')
+        except:
+            try:
+                # Fallback to general UTF-8 locale
+                locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+            except:
+                # If locale setting fails, continue without it
+                pass
+    except:
+        pass
+
+    # Force English for PDF export regardless of user language
+    pdf_lang = 'en'
+    is_persian = False  # Always use LTR layout for English PDF
+
+    # Try to use a font that definitely supports Persian characters
+    persian_font = 'Helvetica'  # Default fallback
+
+    if is_persian:
+        try:
+            # Try to register fonts that support Persian/Arabic characters
+            # First try to use system fonts that are known to support Persian
+            persian_font_names = [
+                'Arial Unicode MS',  # Best Persian support
+                'Tahoma',            # Good Persian support
+                'DejaVu Sans',       # Good Unicode support
+                'Times New Roman',   # Decent Unicode support
+                'Arial',             # Common system font
+            ]
+
+            font_loaded = False
+            for font_name in persian_font_names:
+                try:
+                    # Try to register the font
+                    from reportlab.pdfbase.ttfonts import TTFont
+                    pdfmetrics.registerFont(TTFont(font_name, font_name))
+                    persian_font = font_name
+                    font_loaded = True
+                    print(f"Successfully loaded Persian font: {font_name}")
+                    break
+                except Exception as e:
+                    # Font not available, try next one
+                    continue
+
+            if not font_loaded:
+                # If no Persian fonts work, try built-in fonts that might have Unicode support
+                persian_font = 'Times-Roman'  # Often has better Unicode than Helvetica
+                print("Using Times-Roman as Persian fallback")
+
+        except Exception as e:
+            print(f"Persian font setup error: {e}")
+            persian_font = 'Helvetica'
+
+    # Custom styles for report-style layout with proper font handling
+    # Use fonts that ReportLab knows about and can map properly
+    base_font = persian_font if is_persian else 'Helvetica'
+    bold_font = persian_font + '-Bold' if is_persian else 'Helvetica-Bold'
+    italic_font = persian_font + '-Oblique' if is_persian else 'Helvetica-Oblique'
+
+    # Configure font encoding for Persian/Unicode support
+    if is_persian:
+        try:
+            # Ensure proper Unicode handling for Persian text
+            from reportlab.lib.enums import TA_RIGHT
+            # Test font loading to ensure it works
+            pdfmetrics.setFont(base_font, 10)
+
+            # Additional Unicode configuration for Persian
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.enums import TA_JUSTIFY
+
+            # For Persian, we might want right alignment for better RTL appearance
+            # But let's keep left alignment for consistency with LTR languages
+
+        except Exception as e:
+            print(f"Persian font configuration issue: {e}")
+            # If Persian font fails, fall back to standard Helvetica
+            base_font = 'Helvetica'
+            bold_font = 'Helvetica-Bold'
+            italic_font = 'Helvetica-Oblique'
+
+    # Ensure fonts are available, fallback to standard fonts if needed
+    try:
+        title_style = ParagraphStyle('Title',
+                                   parent=styles['Heading1'],
+                                   alignment=TA_CENTER,
+                                   fontSize=20,
+                                   spaceAfter=25,
+                                   textColor=colors.darkblue,
+                                   fontName=bold_font)
+    except:
+        title_style = ParagraphStyle('Title',
+                                   parent=styles['Heading1'],
+                                   alignment=TA_CENTER,
+                                   fontSize=20,
+                                   spaceAfter=25,
+                                   textColor=colors.darkblue,
+                                   fontName='Helvetica-Bold')
+
+    try:
+        section_style = ParagraphStyle('Section',
+                                     parent=styles['Heading2'],
+                                     alignment=TA_LEFT,
+                                     fontSize=16,
+                                     spaceAfter=15,
+                                     textColor=colors.darkgreen,
+                                     fontName=bold_font)
+    except:
+        section_style = ParagraphStyle('Section',
+                                     parent=styles['Heading2'],
+                                     alignment=TA_LEFT,
+                                     fontSize=16,
+                                     spaceAfter=15,
+                                     textColor=colors.darkgreen,
+                                     fontName='Helvetica-Bold')
+
+    try:
+        summary_style = ParagraphStyle('Summary',
+                                     parent=styles['Normal'],
+                                     fontSize=12,
+                                     alignment=TA_LEFT,
+                                     spaceAfter=8,
+                                     fontName=base_font)
+    except:
+        summary_style = ParagraphStyle('Summary',
+                                     parent=styles['Normal'],
+                                     fontSize=12,
+                                     alignment=TA_LEFT,
+                                     spaceAfter=8,
+                                     fontName='Helvetica')
+
+    try:
+        transaction_style = ParagraphStyle('Transaction',
+                                         parent=styles['Normal'],
+                                         fontSize=10,
+                                         alignment=TA_LEFT,
+                                         spaceAfter=5,
+                                         fontName=base_font,
+                                         leftIndent=20)
+    except:
+        transaction_style = ParagraphStyle('Transaction',
+                                         parent=styles['Normal'],
+                                         fontSize=10,
+                                         alignment=TA_LEFT,
+                                         spaceAfter=5,
+                                         fontName='Helvetica',
+                                         leftIndent=20)
+
+    try:
+        note_style = ParagraphStyle('Note',
+                                  parent=styles['Normal'],
+                                  fontSize=9,
+                                  alignment=TA_LEFT,
+                                  spaceAfter=3,
+                                  fontName=italic_font,
+                                  leftIndent=40)
+    except:
+        note_style = ParagraphStyle('Note',
+                                  parent=styles['Normal'],
+                                  fontSize=9,
+                                  alignment=TA_LEFT,
+                                  spaceAfter=3,
+                                  fontName='Helvetica-Oblique',
+                                  leftIndent=40)
+
+    elements = []
+    currency = get_text('toman', pdf_lang) if settings['currency'] == 'toman' else get_text('dollar', pdf_lang)
+
+    # Title
+    title_text = f"{get_text('reporting_title', pdf_lang)} - {range_text}"
+    title_text = str(title_text)
+    elements.append(Paragraph(title_text, title_style))
+
+    # Financial Summary Section - Report Style
+    summary_title = "💰 Financial Summary"
+    elements.append(Paragraph(summary_title, section_style))
+
+    summary_lines = [
+        f"💵 {get_text('amount_earned', pdf_lang)}: <b>{balance_report['income'] or 0:,} {currency}</b>",
+        f"💸 {get_text('amount_spent', pdf_lang)}: <b>{balance_report['expense'] or 0:,} {currency}</b>",
+        f"⚖️ {get_text('current_balance', pdf_lang)}: <b>{balance_report['balance'] or 0:,} {currency}</b>"
+    ]
+
+    for line in summary_lines:
+        elements.append(Paragraph(line, summary_style))
+
+    elements.append(Spacer(1, 20))
+
+    # Card Balances Section - Report Style
+    if card_balances:
+        card_title = "💳 " + get_text('card_source_balances', pdf_lang)
+        elements.append(Paragraph(card_title, section_style))
+
+        for card in card_balances:
+            card_display = card['name'] or "Unknown"
+            if card['card_number'] and len(card['card_number']) >= 4:
+                card_display += f" (****{card['card_number'][-4:]})"
+
+            start_balance_text = 'Start Balance'
+            net_change_text = 'Net Change'
+            end_balance_text = 'End Balance'
+
+            card_line = f"• <b>{card_display}</b><br/>"
+            card_line += f"  📊 {start_balance_text}: {card['start_balance'] or 0:,} {currency}<br/>"
+            card_line += f"  📈 {net_change_text}: {card['net_change'] or 0:,} {currency}<br/>"
+            card_line += f"  💰 {end_balance_text}: {card['end_balance'] or 0:,} {currency}"
+
+            card_line = str(card_line)  # Ensure Unicode string
+            elements.append(Paragraph(card_line, summary_style))
+            elements.append(Spacer(1, 10))
+
+    # Transactions Section - Report Style
+    if transactions:
+        trans_title = "📋 " + get_text('transactions_in_range', pdf_lang)
+        elements.append(Paragraph(trans_title, section_style))
+
+        # Group transactions by date for better organization
+        from collections import defaultdict
+        transactions_by_date = defaultdict(list)
+
+        for transaction in transactions:
+            trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
+            transactions_by_date[trans_date].append(transaction)
+
+        # Sort dates
+        sorted_dates = sorted(transactions_by_date.keys(), reverse=True)
+
+        for trans_date in sorted_dates:
+            # Date header
+            date_header = f"📅 {trans_date}"
+            date_header = str(date_header)  # Ensure Unicode string
+            elements.append(Paragraph(date_header, section_style))
+            elements.append(Spacer(1, 5))
+
+            # Transactions for this date
+            for transaction in transactions_by_date[trans_date]:
+                trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
+
+                type_emoji = "💰" if trans_type == "income" else "💸"
+                type_text = "Income" if trans_type == "income" else "Expense"
+                category = category or "Unknown"
+                card_display = card_name or "Unknown"
+                if card_number and len(card_number) >= 4:
+                    card_display += f" (****{card_number[-4:]})"
+
+                # Transaction line
+                trans_line = f"{type_emoji} <b>{amount or 0:,} {trans_currency or currency}</b> - {category} - {card_display}"
+                elements.append(Paragraph(trans_line, transaction_style))
+
+                # Note if exists
+                if note:
+                    note_line = f"💬 {note}"
+                    elements.append(Paragraph(note_line, note_style))
+
+            elements.append(Spacer(1, 10))
+
+            # Check if we need a page break (roughly every 20 transactions to prevent overflow)
+            total_so_far = sum(len(transactions_by_date[d]) for d in sorted_dates[:sorted_dates.index(trans_date) + 1])
+            if total_so_far % 20 == 0 and trans_date != sorted_dates[-1]:
+                elements.append(PageBreak())
+
+    # Build PDF
+    doc.build(elements)
 
 # Reports
 @dp.callback_query(F.data == "reporting")
@@ -1761,43 +2690,59 @@ async def generate_custom_report(user_id: int, start_date, end_date, start_date_
     # Recent transactions
     if transactions:
         text += f"{get_text('transactions_in_range', lang)}\n"
-        max_transactions = 10
 
-        for i, transaction in enumerate(transactions[:max_transactions]):
-            trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_source_name, card_number = transaction
+        if len(transactions) <= 10:
+            # Show all transactions if 10 or fewer
+            for i, transaction in enumerate(transactions):
+                trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_source_name, card_number = transaction
 
-            # Handle potential None values
-            amount = amount or 0
-            category = category or ("سایر" if lang == 'fa' else "Other")
-            trans_type = trans_type or "expense"
-            card_source = card_source_name or ""
+                # Handle potential None values
+                amount = amount or 0
+                category = category or ("سایر" if lang == 'fa' else "Other")
+                trans_type = trans_type or "expense"
+                card_source = card_source_name or ""
 
-            # Convert string date to datetime object if needed
-            if isinstance(trans_date, str):
-                from datetime import datetime
-                trans_date = datetime.strptime(trans_date, "%Y-%m-%d").date()
+                # Convert string date to datetime object if needed
+                if isinstance(trans_date, str):
+                    from datetime import datetime
+                    trans_date = datetime.strptime(trans_date, "%Y-%m-%d").date()
 
-            if settings['calendar_format'] == 'jalali':
-                from persiantools.jdatetime import JalaliDate
-                jalali_date = JalaliDate.to_jalali(trans_date.year, trans_date.month, trans_date.day)
-                date_str = f"{jalali_date.year}/{jalali_date.month:02d}/{jalali_date.day:02d}"
-            else:
-                date_str = trans_date.strftime("%Y-%m-%d")
+                if settings['calendar_format'] == 'jalali':
+                    from persiantools.jdatetime import JalaliDate
+                    jalali_date = JalaliDate.to_jalali(trans_date.year, trans_date.month, trans_date.day)
+                    date_str = f"{jalali_date.year}/{jalali_date.month:02d}/{jalali_date.day:02d}"
+                else:
+                    date_str = trans_date.strftime("%Y-%m-%d")
 
-            type_symbol = "🔼" if trans_type == 'income' else "🔻"
+                type_symbol = "🔼" if trans_type == 'income' else "🔻"
 
-            card_text = f" ({card_source})" if card_source else ""
-            text += f"{type_symbol} {amount:,} {currency} - {category}{card_text} - {date_str}\n"
-
-        if len(transactions) > max_transactions:
-            remaining = len(transactions) - max_transactions
-            text += f"\n... و {remaining} تراکنش دیگر" if lang == 'fa' else f"\n... and {remaining} more transactions"
+                card_text = f" ({card_source})" if card_source else ""
+                text += f"{type_symbol} {amount:,} {currency} - {category}{card_text} - {date_str}\n"
+            buttons = [
+                [InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_custom_{start_date_str}_{end_date_str}_{start_date_display.replace('/', '-').replace(' ', '_')}_{end_date_display.replace('/', '-').replace(' ', '_')}")],
+                [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+            ]
+        else:
+            # Use pagination for more than 10 transactions
+            page = 1
+            per_page = 5  # Show 5 transactions per page for better readability
+            transaction_text, total_pages, start_idx, end_idx, total_transactions = format_transactions_page(
+                transactions, page, per_page, lang, currency, settings
+            )
+            text += transaction_text
+            # For custom reports, we need to pass extra data for the date range
+            start_date_display = start_date_display.replace('/', '-').replace(' ', '_')
+            end_date_display = end_date_display.replace('/', '-').replace(' ', '_')
+            extra_data = f"_{start_date_str}_{end_date_str}_{start_date_display}_{end_date_display}"
+            buttons = create_pagination_buttons(page, total_pages, "custom", lang, extra_data)
+            # Add export button at the end
+            buttons.append([InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_custom_{start_date_str}_{end_date_str}_{start_date_display}_{end_date_display}")])
     else:
         text += f"{get_text('no_transactions', lang)}\n"
-
-    buttons = [
-        [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
-    ]
+        buttons = [
+            [InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_custom_{start_date_str}_{end_date_str}_{start_date_display.replace('/', '-').replace(' ', '_')}_{end_date_display.replace('/', '-').replace(' ', '_')}")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+        ]
 
     await send_menu_message(user_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -1877,44 +2822,290 @@ async def show_report(callback: types.CallbackQuery):
     # Transactions list
     if transactions:
         text += f"{get_text('transactions_in_range', lang)}\n"
-        for transaction in transactions[:10]:  # Limit to 10 transactions to avoid message too long
-            trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
 
-            # Handle potential None values
-            amount = amount or 0
-            category = category or ("نامشخص" if lang == 'fa' else "Unknown")
-            trans_type = trans_type or "expense"
+        if len(transactions) <= 10:
+            # Show all transactions if 10 or fewer
+            for transaction in transactions:
+                trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_name, card_number = transaction
 
-            type_emoji = "🔼" if trans_type == "income" else "🔻"
-            card_display = card_name or ("نامشخص" if lang == 'fa' else "Unknown")
-            if card_number and len(card_number) >= 4:
-                card_display += f" (****{card_number[-4:]})"
+                # Handle potential None values
+                amount = amount or 0
+                category = category or ("نامشخص" if lang == 'fa' else "Unknown")
+                trans_type = trans_type or "expense"
 
-            # Format date for display
-            display_date = format_date_for_display(trans_date, settings['calendar_format'], lang)
+                type_emoji = "🔼" if trans_type == "income" else "🔻"
+                card_display = card_name or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card_number and len(card_number) >= 4:
+                    card_display += f" (****{card_number[-4:]})"
 
-            text += f"{type_emoji} {amount:,} {currency} - {category} - {card_display} - {display_date}\n"
-            if note:
-                text += f"   💬 {note}\n"
+                # Format date for display
+                display_date = format_date_for_display(trans_date, settings['calendar_format'], lang)
 
-        if len(transactions) > 10:
-            remaining = len(transactions) - 10
-            text += f"\n... و {remaining} تراکنش دیگر" if lang == 'fa' else f"\n... and {remaining} more transactions"
+                text += f"{type_emoji} {amount:,} {currency} - {category} - {card_display} - {display_date}\n"
+                if note:
+                    text += f"   💬 {note}\n"
+            buttons = [
+                [InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_{range_type}")],
+                [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+            ]
+        else:
+            # Use pagination for more than 10 transactions
+            page = 1
+            per_page = 5  # Show 5 transactions per page for better readability
+            transaction_text, total_pages, start_idx, end_idx, total_transactions = format_transactions_page(
+                transactions, page, per_page, lang, currency, settings
+            )
+            text += transaction_text
+            buttons = create_pagination_buttons(page, total_pages, range_type, lang)
+            # Add export button at the end
+            buttons.append([InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_{range_type}")])
     else:
         text += f"{get_text('no_transactions', lang)}\n"
-
-    buttons = [
-        [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
-    ]
+        buttons = [
+            [InlineKeyboardButton(text=get_text('export_report', lang), callback_data=f"export_report_{range_type}")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+        ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
+
+# Pagination Handlers
+@dp.callback_query(F.data.startswith("report_page_"))
+async def handle_report_pagination(callback: types.CallbackQuery):
+    """Handle pagination for reports."""
+    lang = get_user_lang(callback)
+
+    try:
+        # Parse callback data: report_page_{page}_{range_type}[_{extra_data}]
+        parts = callback.data.split('_')
+        page = int(parts[2])
+        range_type = parts[3]
+
+        user_id = callback.from_user.id
+        from datetime import date, timedelta
+
+        today = date.today()
+
+        # Determine date range based on type
+        if range_type == "custom":
+            # Custom range: report_page_{page}_custom_{start_date}_{end_date}_{start_display}_{end_display}
+            if len(parts) >= 8:
+                start_date_str = parts[4]
+                end_date_str = parts[5]
+                start_date_display = parts[6].replace('-', '/').replace('_', ' ')
+                end_date_display = parts[7].replace('-', '/').replace('_', ' ')
+
+                from datetime import datetime
+                start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                range_text = get_text('custom_range_title', lang, start_date=start_date_display, end_date=end_date_display)
+            else:
+                await callback.answer(get_text('error', lang), show_alert=True)
+                return
+        else:
+            # Standard ranges
+            if range_type == "overall":
+                start_date = date(2000, 1, 1)
+                end_date = today
+                range_text = "گزارش کلی" if lang == 'fa' else "Overall Report"
+            elif range_type == "day":
+                start_date = today
+                end_date = today
+                range_text = "امروز" if lang == 'fa' else "Today"
+            elif range_type == "week":
+                start_date = today - timedelta(days=6)
+                end_date = today
+                range_text = "هفته جاری" if lang == 'fa' else "This Week"
+            elif range_type == "month":
+                start_date = today.replace(day=1)
+                end_date = today
+                range_text = "ماه جاری" if lang == 'fa' else "This Month"
+            elif range_type == "year":
+                start_date = today.replace(month=1, day=1)
+                end_date = today
+                range_text = "سال جاری" if lang == 'fa' else "This Year"
+            else:
+                await callback.answer(get_text('error', lang), show_alert=True)
+                return
+
+            start_date_str = start_date.strftime("%Y-%m-%d")
+            end_date_str = end_date.strftime("%Y-%m-%d")
+
+        # Get all required data
+        balance_report = db.get_balance_report(user_id, start_date_str, end_date_str)
+        card_balances = db.get_card_source_balances_in_range(user_id, start_date_str, end_date_str)
+        transactions = db.get_transactions_in_range(user_id, start_date_str, end_date_str)
+        settings = db.get_user_settings(user_id)
+        currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
+
+        # Build the report header (same for all pages)
+        text = f"{get_text('reporting_title', lang)} - {range_text}\n\n"
+
+        # Financial summary
+        income = balance_report['income'] or 0
+        expense = balance_report['expense'] or 0
+        balance = balance_report['balance'] or 0
+        text += f"{get_text('amount_earned', lang)}: {income:,} {currency}\n"
+        text += f"{get_text('amount_spent', lang)}: {expense:,} {currency}\n"
+        text += f"{get_text('current_balance', lang)}: {balance:,} {currency}\n\n"
+
+        # Card/Source balances
+        if card_balances:
+            text += f"{get_text('card_source_balances', lang)}:\n"
+            for card in card_balances:
+                card_display = card['name'] or ("نامشخص" if lang == 'fa' else "Unknown")
+                if card['card_number'] and len(card['card_number']) >= 4:
+                    card_display += f" (****{card['card_number'][-4:]})"
+
+                end_balance = card['end_balance'] or 0
+                net_change = card['net_change'] or 0
+
+                text += f"• {card_display}: {end_balance:,} {currency}"
+                if net_change != 0:
+                    change_text = f"(تغییر: {'+' if net_change > 0 else ''}{net_change:,})" if lang == 'fa' else f"(Change: {'+' if net_change > 0 else ''}{net_change:,})"
+                    text += f" {change_text}"
+                text += "\n"
+            text += "\n"
+
+        # Transactions with pagination
+        if transactions:
+            text += f"{get_text('transactions_in_range', lang)}\n"
+
+            per_page = 5
+            transaction_text, total_pages, start_idx, end_idx, total_transactions = format_transactions_page(
+                transactions, page, per_page, lang, currency, settings
+            )
+            text += transaction_text
+
+            if range_type == "custom":
+                start_date_display = start_date_display.replace('/', '-').replace(' ', '_')
+                end_date_display = end_date_display.replace('/', '-').replace(' ', '_')
+                extra_data = f"_{start_date_str}_{end_date_str}_{start_date_display}_{end_date_display}"
+                buttons = create_pagination_buttons(page, total_pages, range_type, lang, extra_data)
+            else:
+                buttons = create_pagination_buttons(page, total_pages, range_type, lang)
+        else:
+            text += f"{get_text('no_transactions', lang)}\n"
+            buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]]
+
+        await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    except Exception as e:
+        logging.error(f"Error in report pagination: {e}")
+        await callback.answer(get_text('error', lang), show_alert=True)
+
+    await callback.answer()
+
+# Export Handlers
+@dp.callback_query(F.data.startswith("export_report_"))
+async def handle_export_report(callback: types.CallbackQuery):
+    """Handle export report button clicks and show format selection."""
+    lang = get_user_lang(callback)
+
+    # Parse the callback data to get range information
+    parts = callback.data.split('_')
+    range_type = parts[2]  # export_report_{range_type}
+
+    # Store range information for the actual export
+    export_data = f"export_{range_type}"
+
+    # Add additional data for custom ranges
+    if range_type == "custom" and len(parts) >= 7:
+        start_date = parts[3]
+        end_date = parts[4]
+        start_display = parts[5]
+        end_display = parts[6]
+        export_data = f"export_custom_{start_date}_{end_date}_{start_display}_{end_display}"
+
+    text = get_text('select_export_format', lang)
+
+    buttons = [
+        [InlineKeyboardButton(text=get_text('export_csv', lang), callback_data=f"{export_data}_csv")],
+        [InlineKeyboardButton(text=get_text('export_excel', lang), callback_data=f"{export_data}_excel")],
+        [InlineKeyboardButton(text=get_text('export_pdf', lang), callback_data=f"{export_data}_pdf")],
+        [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+    ]
+
+    await safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("export_") & (F.data.endswith("_csv") | F.data.endswith("_excel") | F.data.endswith("_pdf")))
+async def handle_export_format(callback: types.CallbackQuery):
+    """Handle actual export format selection and generate files."""
+    lang = get_user_lang(callback)
+    user_id = callback.from_user.id
+
+    # Parse export data
+    parts = callback.data.split('_')
+    export_format = parts[-1]  # Last part is the format (csv, excel, pdf)
+
+    # Extract range information
+    if parts[1] == "custom":
+        # Custom range: export_custom_{start_date}_{end_date}_{start_display}_{end_display}_{format}
+        start_date_str = parts[2]
+        end_date_str = parts[3]
+        start_date_display = parts[4]
+        end_date_display = parts[5]
+        range_type = "custom"
+    else:
+        # Standard range: export_{range_type}_{format}
+        range_type = parts[1]
+        start_date_str = None
+        end_date_str = None
+        start_date_display = None
+        end_date_display = None
+
+    try:
+        # Show generating message
+        await callback.answer(get_text('export_generating', lang))
+
+        # Generate the export file
+        file_path = await generate_export_file(
+            user_id, range_type, export_format, lang,
+            start_date_str, end_date_str, start_date_display, end_date_display
+        )
+
+        if file_path:
+            # Send the file
+            with open(file_path, 'rb') as file:
+                # Set correct filename based on format
+                if export_format == 'excel':
+                    filename = "report.xlsx"
+                elif export_format == 'pdf':
+                    filename = "report.pdf"
+                elif export_format == 'csv':
+                    filename = "report.csv"
+                else:
+                    filename = f"report.{export_format}"
+
+                await callback.message.answer_document(
+                    document=types.input_file.BufferedInputFile(file.read(), filename=filename),
+                    caption=get_text('export_ready', lang)
+                )
+
+            # Clean up the file
+            import os
+            os.remove(file_path)
+        else:
+            await callback.message.answer(get_text('export_error', lang))
+
+    except Exception as e:
+        logging.error(f"Error generating export: {e}")
+        await callback.message.answer(get_text('export_error', lang))
 
 # Planning FSM Handlers
 @dp.callback_query(F.data == "add_plan")
 async def start_add_plan(callback: types.CallbackQuery, state: FSMContext):
     lang = get_user_lang(callback)
-    await callback.message.answer(get_text('enter_plan_title', lang))
+
+    # Delete the original menu message
+    try:
+        await bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+    except Exception:
+        pass  # Ignore if message was already deleted
+
+    sent_message = await callback.message.answer(get_text('enter_plan_title', lang))
+    await state.update_data(prompt_message_id=sent_message.message_id)
     await state.set_state(PlanStates.waiting_for_title)
     await callback.answer()
 
@@ -1922,9 +3113,19 @@ async def start_add_plan(callback: types.CallbackQuery, state: FSMContext):
 async def process_plan_title(message: types.Message, state: FSMContext):
     lang = get_user_lang(message)
     await state.update_data(title=message.text)
+
+    # Delete the prompt message
+    data = await state.get_data()
+    prompt_message_id = data.get('prompt_message_id')
+    if prompt_message_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_message_id)
+        except Exception:
+            pass  # Ignore if message was already deleted
+
     from datetime import date
     today = date.today().strftime("%Y-%m-%d")
-    
+
     buttons = [
         [InlineKeyboardButton(text=get_text('today', lang), callback_data=f"pdate_{today}")],
         [InlineKeyboardButton(text=get_text('tomorrow', lang), callback_data="pdate_tomorrow")]
@@ -1943,8 +3144,9 @@ async def process_plan_date(callback: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(date=p_date)
     skip_text = "Skip" if lang == 'en' else "رد کردن"
-    await callback.message.answer(get_text('enter_time', lang), 
+    sent_message = await callback.message.answer(get_text('enter_time', lang),
                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=skip_text, callback_data="skip_time")]]))
+    await state.update_data(prompt_message_id=sent_message.message_id)
     await state.set_state(PlanStates.waiting_for_time)
     await callback.answer()
 
@@ -1959,13 +3161,21 @@ async def process_plan_time(event: types.Message | types.CallbackQuery, state: F
     
     data = await state.get_data()
     db.add_plan(event.from_user.id, data['title'], data['date'], data.get('time'))
-    
+
+    # Delete the prompt message
+    prompt_message_id = data.get('prompt_message_id')
+    if prompt_message_id:
+        try:
+            await bot.delete_message(chat_id=event.from_user.id, message_id=prompt_message_id)
+        except Exception:
+            pass  # Ignore if message was already deleted
+
     text = get_text('plan_saved', lang)
     if isinstance(event, types.CallbackQuery):
         await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
     else:
         await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
-    
+
     await state.clear()
 
 # View Plans - Helper function
