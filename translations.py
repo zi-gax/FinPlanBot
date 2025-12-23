@@ -24,6 +24,7 @@ TRANSLATIONS = {
         'cancel_hint': '💡 می‌توانید از دکمه ❌ لغو برای بازگشت استفاده کنید.',
         'invalid_amount': '❌ لطفا یک عدد معتبر وارد کنید:',
         'select_type': 'نوع تراکنش را انتخاب کنید:',
+        'select_transaction_type': 'نوع تراکنش را انتخاب کنید:',
         'expense_type': '🔻 هزینه',
         'income_type': '🔼 درآمد',
         'select_category': 'دسته را انتخاب کنید:',
@@ -130,6 +131,10 @@ TRANSLATIONS = {
         'time_range_month': '📈 ۱ ماه',
         'time_range_year': '📉 ۱ سال',
         'time_range_custom': '📅 بازه سفارشی',
+        'enter_start_date': '📅 تاریخ شروع را وارد کنید ({calendar_format}):',
+        'enter_end_date': '📅 تاریخ پایان را وارد کنید ({calendar_format}):',
+        'invalid_date_format': '❌ فرمت تاریخ نامعتبر است. لطفاً دوباره تلاش کنید:',
+        'custom_range_title': '📅 بازه سفارشی ({start_date} تا {end_date})',
         'amount_spent': '🔻 مبلغ هزینه شده',
         'amount_earned': '🔼 مبلغ درآمد',
         'current_balance': '⚖️ موجودی فعلی',
@@ -240,6 +245,10 @@ TRANSLATIONS = {
         'time_range_month': '📈 1 Month',
         'time_range_year': '📉 1 Year',
         'time_range_custom': '📅 Custom Range',
+        'enter_start_date': '📅 Enter start date ({calendar_format}):',
+        'enter_end_date': '📅 Enter end date ({calendar_format}):',
+        'invalid_date_format': '❌ Invalid date format. Please try again:',
+        'custom_range_title': '📅 Custom Range ({start_date} to {end_date})',
         'amount_spent': '🔻 Amount Spent',
         'amount_earned': '🔼 Amount Earned',
         'current_balance': '⚖️ Current Balance',
@@ -300,10 +309,7 @@ TRANSLATIONS = {
         'card_source_deleted': '🗑 Card/source "{name}" deleted.',
         'confirm_delete_card': '⚠️ Are you sure you want to delete card/source "{name}"?',
         'card_source_exists': '❌ A card/source with this card number already exists.',
-        # Quick Transaction
         'select_transaction_type': 'Select transaction type:',
-        # Quick Transaction
-        'select_transaction_type': 'نوع تراکنش را انتخاب کنید:',
     }
 }
 

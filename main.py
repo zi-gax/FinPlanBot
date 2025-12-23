@@ -9,9 +9,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import StateFilter
 from aiogram.exceptions import TelegramBadRequest
-
-import sys
-import os
 from config import API_token, ADMIN_IDS
 from database import Database
 from ai_parser import ai_parser
@@ -66,9 +63,9 @@ class CardSourceStates(StatesGroup):
     waiting_for_edit_name = State()
     waiting_for_edit_card_number = State()
 
-class SettingsStates(StatesGroup):
-    waiting_for_currency = State()
-    waiting_for_calendar = State()
+class CustomReportStates(StatesGroup):
+    waiting_for_start_date = State()
+    waiting_for_end_date = State()
 
 # Keyboards
 def main_menu_kb(lang='fa', is_admin=False):
@@ -100,14 +97,14 @@ def finance_menu_kb(lang='fa'):
             [InlineKeyboardButton(text="➕ Add Transaction", callback_data="add_transaction")],
             [InlineKeyboardButton(text="📊 Reporting", callback_data="reporting")],
             [InlineKeyboardButton(text="⚙️ Settings", callback_data="financial_settings")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     else:
         buttons = [
             [InlineKeyboardButton(text="➕ افزودن تراکنش", callback_data="add_transaction")],
             [InlineKeyboardButton(text="📊 گزارش‌گیری", callback_data="reporting")],
             [InlineKeyboardButton(text="⚙️ تنظیمات", callback_data="financial_settings")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -118,14 +115,14 @@ def planning_menu_kb(lang='fa'):
             [InlineKeyboardButton(text="➕ Add Plan", callback_data="add_plan")],
             [InlineKeyboardButton(text="📆 Today's Plans", callback_data="plans_today")],
             [InlineKeyboardButton(text="📅 This Week's Plans", callback_data="plans_week")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     else:
         buttons = [
             [InlineKeyboardButton(text="➕ افزودن برنامه", callback_data="add_plan")],
             [InlineKeyboardButton(text="📆 برنامه‌های امروز", callback_data="plans_today")],
             [InlineKeyboardButton(text="📅 برنامه‌های این هفته", callback_data="plans_week")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -135,13 +132,13 @@ def admin_menu_kb(lang='fa'):
         buttons = [
             [InlineKeyboardButton(text="👥 User List", callback_data="admin_users")],
             [InlineKeyboardButton(text="📊 Statistics", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     else:
         buttons = [
             [InlineKeyboardButton(text="👥 لیست کاربران", callback_data="admin_users")],
             [InlineKeyboardButton(text="📊 آمار", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -170,26 +167,7 @@ async def back_to_main(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "settings")
 async def settings_menu(callback: types.CallbackQuery):
     """Show settings menu."""
-    lang = db.get_user_language(callback.from_user.id)
-
-    if lang == 'en':
-        text = "⚙️ Settings\n\nSelect an option:"
-        buttons = [
-            [InlineKeyboardButton(text="💰 Financial Settings", callback_data="financial_settings")],
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
-        ]
-    else:  # Persian
-        text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
-        buttons = [
-            [InlineKeyboardButton(text="💰 تنظیمات مالی", callback_data="financial_settings")],
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
-        ]
-
-    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await show_settings_menu(callback.from_user.id)
     await callback.answer()
 
 @dp.callback_query(F.data == "financial_settings")
@@ -208,7 +186,7 @@ async def financial_settings_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="📅 Change Calendar", callback_data="change_calendar")],
             [InlineKeyboardButton(text="💳 Manage Cards/Sources", callback_data="manage_cards_sources")],
             [InlineKeyboardButton(text="📂 Manage Categories", callback_data="categories")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="settings")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="settings")]
         ]
     else:  # Persian
         text = f"⚙️ تنظیمات مالی\n\nتنظیمات فعلی:\n💵 واحد پول: {currency_text}\n📅 تقویم: {calendar_text}\n\nگزینه مورد نظر را انتخاب کنید:"
@@ -217,7 +195,7 @@ async def financial_settings_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="📅 تغییر تقویم", callback_data="change_calendar")],
             [InlineKeyboardButton(text="💳 مدیریت کارت‌ها/منابع", callback_data="manage_cards_sources")],
             [InlineKeyboardButton(text="📂 مدیریت دسته‌بندی‌ها", callback_data="categories")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="settings")]
         ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -263,12 +241,12 @@ async def manage_cards_sources_menu(callback: types.CallbackQuery):
     if lang == 'en':
         buttons.extend([
             [InlineKeyboardButton(text="➕ Add Card/Source", callback_data="add_card_source")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="financial_settings")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="financial_settings")]
         ])
     else:
         buttons.extend([
             [InlineKeyboardButton(text="➕ افزودن کارت/منبع", callback_data="add_card_source")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="financial_settings")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="financial_settings")]
         ])
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -313,6 +291,8 @@ async def process_source_name(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "skip_card_number", StateFilter(CardSourceStates.waiting_for_card_number))
 async def skip_card_number(callback: types.CallbackQuery, state: FSMContext):
     """Skip entering card number."""
+    # Delete the card number input message
+    await bot.delete_message(chat_id=callback.from_user.id, message_id=callback.message.message_id)
     await process_card_number_finish(callback, state, None)
 
 @dp.message(CardSourceStates.waiting_for_card_number)
@@ -401,7 +381,7 @@ async def edit_card_source_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="✏️ Edit Name", callback_data=f"edit_name_{card_id}")],
             [InlineKeyboardButton(text="💳 Edit Card Number", callback_data=f"edit_card_number_{card_id}")],
             [InlineKeyboardButton(text="🗑 Delete", callback_data=f"delete_card_{card_id}")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="manage_cards_sources")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="manage_cards_sources")]
         ]
     else:
         text = f"💳 ویرایش کارت/منبع\n\nنام: {name}\nکارت: {card_display}\nموجودی: {balance:,} {currency}\n\nاقدام مورد نظر را انتخاب کنید:"
@@ -409,7 +389,7 @@ async def edit_card_source_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="✏️ ویرایش نام", callback_data=f"edit_name_{card_id}")],
             [InlineKeyboardButton(text="💳 ویرایش شماره کارت", callback_data=f"edit_card_number_{card_id}")],
             [InlineKeyboardButton(text="🗑 حذف", callback_data=f"delete_card_{card_id}")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="manage_cards_sources")]
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="manage_cards_sources")]
         ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -522,7 +502,7 @@ async def admin_users(callback: types.CallbackQuery):
         if nav_buttons:
             buttons.append(nav_buttons)
 
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+    buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="admin_panel")])
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -565,7 +545,7 @@ async def admin_users_page(callback: types.CallbackQuery):
     if nav_buttons:
         buttons.append(nav_buttons)
 
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+    buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="admin_panel")])
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -611,7 +591,7 @@ async def admin_stats(callback: types.CallbackQuery):
         text += f"📅 تعداد کل برنامه‌ها: {stats['total_plans']:,}\n"
         text += f"📂 تعداد کل دسته‌بندی‌ها: {stats['total_categories']:,}\n"
 
-    buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
+    buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="admin_panel")]]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -688,14 +668,14 @@ async def change_language_menu(callback: types.CallbackQuery):
         buttons = [
             [InlineKeyboardButton(text="🇮🇷 فارسی (Persian)", callback_data="set_lang_fa")],
             [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="settings")]
+            [InlineKeyboardButton(text=get_text('back', current_lang), callback_data="settings")]
         ]
     else:  # Persian
         text = "🌐 تغییر زبان\n\nزبان فعلی: فارسی\n\nلطفاً زبان مورد نظر خود را انتخاب کنید:"
         buttons = [
             [InlineKeyboardButton(text="🇮🇷 فارسی", callback_data="set_lang_fa")],
             [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
+            [InlineKeyboardButton(text=get_text('back', current_lang), callback_data="settings")]
         ]
     
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -740,7 +720,7 @@ async def finance_main(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text=get_text('add_transaction', lang), callback_data="add_transaction")],
         [InlineKeyboardButton(text="📊 " + ("Reporting" if lang == 'en' else "گزارش‌گیری"), callback_data="reporting")],
         [InlineKeyboardButton(text="⚙️ " + ("Settings" if lang == 'en' else "تنظیمات"), callback_data="financial_settings")],
-        [InlineKeyboardButton(text="🔙 " + get_text('back', lang), callback_data="main_menu")]
+        [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
     ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -790,104 +770,52 @@ async def execute_clear_everything(callback: types.CallbackQuery):
     lang = get_user_lang(callback)
     db.clear_user_data(callback.from_user.id)
 
-    # Show success message and redirect to settings
+    # Show success message briefly
     success_text = get_text('data_cleared', lang)
-    if lang == 'en':
-        settings_text = "⚙️ Settings\n\nSelect an option:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
-        ]
-    else:  # Persian
-        settings_text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
-        ]
+    await send_menu_message(callback.from_user.id, success_text)
 
-    # Show success message briefly, then show settings
-    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+    # Wait 2 seconds then show settings menu
+    await asyncio.sleep(2)
+    await show_settings_menu(callback.from_user.id)
 
 @dp.callback_query(F.data == "execute_clear_cards")
 async def execute_clear_cards(callback: types.CallbackQuery):
     lang = get_user_lang(callback)
     db.clear_cards(callback.from_user.id)
 
-    # Show success message and redirect to settings
+    # Show success message briefly
     success_text = "✅ کارت‌ها با موفقیت پاکسازی شد." if lang == 'fa' else "✅ Cards cleared successfully."
-    if lang == 'en':
-        settings_text = "⚙️ Settings\n\nSelect an option:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
-        ]
-    else:  # Persian
-        settings_text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
-        ]
+    await send_menu_message(callback.from_user.id, success_text)
 
-    # Show success message briefly, then show settings
-    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+    # Wait 2 seconds then show settings menu
+    await asyncio.sleep(2)
+    await show_settings_menu(callback.from_user.id)
 
 @dp.callback_query(F.data == "execute_clear_financial")
 async def execute_clear_financial(callback: types.CallbackQuery):
     lang = get_user_lang(callback)
     db.clear_financial_data(callback.from_user.id)
 
-    # Show success message and redirect to settings
+    # Show success message briefly
     success_text = get_text('financial_data_cleared', lang)
-    if lang == 'en':
-        settings_text = "⚙️ Settings\n\nSelect an option:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
-        ]
-    else:  # Persian
-        settings_text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
-        ]
+    await send_menu_message(callback.from_user.id, success_text)
 
-    # Show success message briefly, then show settings
-    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+    # Wait 2 seconds then show settings menu
+    await asyncio.sleep(2)
+    await show_settings_menu(callback.from_user.id)
 
 @dp.callback_query(F.data == "execute_clear_planning")
 async def execute_clear_planning(callback: types.CallbackQuery):
     lang = get_user_lang(callback)
     db.clear_planning_data(callback.from_user.id)
 
-    # Show success message and redirect to settings
+    # Show success message briefly
     success_text = get_text('planning_data_cleared', lang)
-    if lang == 'en':
-        settings_text = "⚙️ Settings\n\nSelect an option:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
-        ]
-    else:  # Persian
-        settings_text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
-        buttons = [
-            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
-            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
-        ]
+    await send_menu_message(callback.from_user.id, success_text)
 
-    # Show success message briefly, then show settings
-    await send_menu_message(callback.from_user.id, success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+    # Wait 2 seconds then show settings menu
+    await asyncio.sleep(2)
+    await show_settings_menu(callback.from_user.id)
 
 # Restart functionality removed
 
@@ -966,7 +894,14 @@ def format_date_for_display(date_str, calendar_format, lang='fa'):
 def parse_date_input(date_input, calendar_format):
     """Parse date input and convert to Gregorian format for storage."""
     try:
-        year, month, day = map(int, date_input.split('-'))
+        # Handle both dash and slash separators
+        if '-' in date_input:
+            year, month, day = map(int, date_input.split('-'))
+        elif '/' in date_input:
+            year, month, day = map(int, date_input.split('/'))
+        else:
+            raise ValueError("Invalid date format")
+
         if calendar_format == 'jalali':
             gy, gm, gd = jalali_to_gregorian(year, month, day)
             return f"{gy:04d}-{gm:02d}-{gd:02d}"
@@ -992,6 +927,47 @@ async def safe_edit_text(message_or_callback, text: str, reply_markup=None):
         else:
             # Re-raise if it's a different TelegramBadRequest
             raise
+
+# Helper: Generate settings menu keyboard
+def settings_menu_kb(lang='fa'):
+    """Generate settings menu keyboard based on language."""
+    if lang == 'en':
+        buttons = [
+            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
+            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
+        ]
+    else:  # Persian
+        buttons = [
+            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
+            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Helper: Show full settings menu for a user
+async def show_settings_menu(user_id: int):
+    """Show the full settings menu for a user."""
+    lang = db.get_user_language(user_id)
+
+    if lang == 'en':
+        text = "⚙️ Settings\n\nSelect an option:"
+        buttons = [
+            [InlineKeyboardButton(text="💰 Financial Settings", callback_data="financial_settings")],
+            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
+            [InlineKeyboardButton(text="🌐 Change Language", callback_data="change_language")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
+        ]
+    else:  # Persian
+        text = "⚙️ تنظیمات\n\nگزینه مورد نظر را انتخاب کنید:"
+        buttons = [
+            [InlineKeyboardButton(text="💰 تنظیمات مالی", callback_data="financial_settings")],
+            [InlineKeyboardButton(text=get_text('clear_data', lang), callback_data="confirm_clear_data")],
+            [InlineKeyboardButton(text="🌐 تغییر زبان", callback_data="change_language")],
+            [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
+        ]
+
+    await send_menu_message(user_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 # Helper: Send menu message and manage previous menu deletion
 async def send_menu_message(user_id: int, text: str, reply_markup=None):
@@ -1058,7 +1034,12 @@ async def process_amount(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="💳 " + ("مدیریت کارت‌ها/منابع" if lang == 'fa' else "Manage Cards/Sources"), callback_data="manage_cards_sources")],
             [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
         ]
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        sent_message = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        # Track message ID for cleanup
+        data = await state.get_data()
+        message_ids = data.get('message_ids', [])
+        message_ids.append(sent_message.message_id)
+        await state.update_data(message_ids=message_ids)
         return
 
     text = f"{get_text('amount_label', lang)}: {amount:,} {currency_display}\n\n{get_text('select_card_source', lang)}"
@@ -1076,7 +1057,12 @@ async def process_amount(message: types.Message, state: FSMContext):
         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f"card_{card_id}")])
 
     buttons.append([InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")])
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    sent_message = await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Track message ID for cleanup
+    data = await state.get_data()
+    message_ids = data.get('message_ids', [])
+    message_ids.append(sent_message.message_id)
+    await state.update_data(message_ids=message_ids)
     await state.set_state(TransactionStates.waiting_for_card_source)
 
 @dp.callback_query(TransactionStates.waiting_for_card_source)
@@ -1107,8 +1093,12 @@ async def process_card_source(callback: types.CallbackQuery, state: FSMContext):
 
     text = f"{get_text('amount_label', lang)}: {amount:,} {currency_display}\n"
     text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n\n"  # card_source[1] is name
-    text += f"{get_text('enter_date', lang, calendar_format=calendar_display)}\n\n"
-    text += "📅 مثال: ۱۴۰۳-۰۶-۱۵ (شمسی) یا 2024-12-25 (میلادی)" if lang == 'fa' else "📅 Example: 1403-06-15 (Jalali) or 2024-12-25 (Gregorian)"
+    if calendar_format == 'jalali':
+        text += f"{get_text('enter_date', lang, calendar_format=calendar_display)}\n\n"
+        text += "📅 مثال: ۱۴۰۳-۰۶-۱۵ یا ۱۴۰۳/۰۶/۱۵ (شمسی) یا 2024-12-25 (میلادی)" if lang == 'fa' else "📅 Example: 1403-06-15 or 1403/06/15 (Jalali) or 2024-12-25 (Gregorian)"
+    else:
+        text += f"{get_text('enter_date', lang, calendar_format=calendar_display)}\n\n"
+        text += "📅 مثال: ۱۴۰۳-۰۶-۱۵ (شمسی) یا 2024-12-25 (میلادی)" if lang == 'fa' else "📅 Example: 1403-06-15 (Jalali) or 2024-12-25 (Gregorian)"
 
     buttons = [
         [InlineKeyboardButton(text="📅 امروز" if lang == 'fa' else "📅 Today", callback_data="date_today")],
@@ -1140,12 +1130,18 @@ async def process_date(event, state: FSMContext):
     else:
         # Manual date input
         date_input = event.text.strip()
-        # Basic date validation - accept YYYY-MM-DD format
+        # Basic date validation
         import re
-        if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_input):
-            calendar_name = "شمسی" if calendar_format == 'jalali' and lang == 'fa' else ("Jalali" if calendar_format == 'jalali' else "Gregorian")
-            await event.answer(f"❌ فرمت تاریخ نامعتبر. لطفا از فرمت YYYY-MM-DD ({calendar_name}) استفاده کنید." if lang == 'fa' else f"❌ Invalid date format. Please use YYYY-MM-DD ({calendar_name}) format.")
-            return
+        if calendar_format == 'jalali':
+            # For Jalali calendar, accept both YYYY-MM-DD and YYYY/MM/DD formats
+            if not re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}$', date_input):
+                await event.answer(f"❌ Invalid date format. Please try again:\n\nJalali format:\n• YYYY-MM-DD or YYYY/MM/DD (e.g., 1403-06-15 or 1403/06/15)" if lang == 'en' else f"❌ فرمت تاریخ نامعتبر. لطفا از فرمت‌های زیر استفاده کنید:\n\nفرمت شمسی:\n• YYYY-MM-DD یا YYYY/MM/DD (مثال: ۱۴۰۳-۰۶-۱۵ یا ۱۴۰۳/۰۶/۱۵)")
+                return
+        else:
+            # For Gregorian calendar, accept YYYY-MM-DD format
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_input):
+                await event.answer(f"❌ Invalid date format. Please use YYYY-MM-DD format." if lang == 'en' else f"❌ فرمت تاریخ نامعتبر. لطفا از فرمت YYYY-MM-DD استفاده کنید.")
+                return
         # Convert input date to Gregorian for storage
         selected_date = parse_date_input(date_input, calendar_format)
 
@@ -1215,7 +1211,12 @@ async def process_description_finish(event, state: FSMContext, description):
     if isinstance(event, types.CallbackQuery):
         await safe_edit_text(event, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     else:
-        await event.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        sent_message = await event.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        # Track message ID for cleanup
+        data = await state.get_data()
+        message_ids = data.get('message_ids', [])
+        message_ids.append(sent_message.message_id)
+        await state.update_data(message_ids=message_ids)
 
     await state.set_state(TransactionStates.waiting_for_type)
 
@@ -1319,17 +1320,29 @@ async def process_category(callback: types.CallbackQuery, state: FSMContext):
 # Cancel transaction handler
 @dp.callback_query(F.data == "cancel_transaction")
 async def cancel_transaction(callback: types.CallbackQuery, state: FSMContext):
-    lang = get_user_lang(callback)
+    # Delete all tracked messages from the transaction flow
+    data = await state.get_data()
+    message_ids = data.get('message_ids', [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=callback.from_user.id, message_id=message_id)
+        except Exception as e:
+            # Ignore errors if message doesn't exist or can't be deleted
+            logging.debug(f"Could not delete transaction message {message_id}: {e}")
+
+    # Clear any existing transaction state
     await state.clear()
 
-    # Show finance main menu
-    text = get_text('select_transaction_type', lang) if get_text('select_transaction_type', lang) != 'select_transaction_type' else (
-        "نوع تراکنش را انتخاب کنید:" if lang == 'fa' else "Select transaction type:"
-    )
+    lang = get_user_lang(callback)
+
+    # Show full finance main menu (same as finance_main function)
+    text = get_text('select_transaction_type', lang)
 
     buttons = [
         [InlineKeyboardButton(text=get_text('add_transaction', lang), callback_data="add_transaction")],
-        [InlineKeyboardButton(text="🔙 " + get_text('back', lang), callback_data="finance_main")]
+        [InlineKeyboardButton(text="📊 " + ("Reporting" if lang == 'en' else "گزارش‌گیری"), callback_data="reporting")],
+        [InlineKeyboardButton(text="⚙️ " + ("Settings" if lang == 'en' else "تنظیمات"), callback_data="financial_settings")],
+        [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
     ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1401,6 +1414,16 @@ async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
             f"💰 موجودی {card_source[1]}: {card_source[3]:,} {currency_display}"
         )
     await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
+
+    # Delete all tracked messages from the transaction flow
+    message_ids = data.get('message_ids', [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=callback.from_user.id, message_id=message_id)
+        except Exception as e:
+            # Ignore errors if message doesn't exist or can't be deleted
+            logging.debug(f"Could not delete transaction message {message_id}: {e}")
+
     await state.clear()
     await callback.answer(get_text('done', lang))
 
@@ -1495,11 +1518,288 @@ async def reporting(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=get_text('time_range_week', lang), callback_data="report_range_week")],
         [InlineKeyboardButton(text=get_text('time_range_month', lang), callback_data="report_range_month")],
         [InlineKeyboardButton(text=get_text('time_range_year', lang), callback_data="report_range_year")],
+        [InlineKeyboardButton(text=get_text('time_range_custom', lang), callback_data="report_range_custom")],
         [InlineKeyboardButton(text=get_text('back', lang), callback_data="finance_main")]
     ]
 
     await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
+
+@dp.callback_query(F.data == "report_range_custom")
+async def custom_report_range(callback: types.CallbackQuery, state: FSMContext):
+    """Handle custom time range selection."""
+    lang = get_user_lang(callback)
+    settings = db.get_user_settings(callback.from_user.id)
+    calendar_format = "Jalali (YYYY/MM/DD)" if settings['calendar_format'] == 'jalali' else "Gregorian (YYYY-MM-DD)"
+
+    if settings['calendar_format'] == 'jalali':
+        calendar_format = "Jalali (YYYY/MM/DD or MM/DD/YYYY)"
+    else:
+        calendar_format = "Gregorian (YYYY-MM-DD)"
+    text = get_text('enter_start_date', lang, calendar_format=calendar_format)
+    cancel_button = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="reporting")]]
+
+    await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=cancel_button))
+    await state.set_state(CustomReportStates.waiting_for_start_date)
+    await callback.answer()
+
+@dp.message(CustomReportStates.waiting_for_start_date)
+async def process_start_date(message: types.Message, state: FSMContext):
+    """Process the start date input."""
+    lang = get_user_lang(message)
+    settings = db.get_user_settings(message.from_user.id)
+
+    try:
+        if settings['calendar_format'] == 'jalali':
+            # Parse Jalali date - try both YYYY/MM/DD and MM/DD/YYYY formats
+            parts = message.text.strip().split('/')
+            if len(parts) != 3:
+                raise ValueError("Invalid format")
+
+            jy, jm, jd = map(int, parts)
+
+            # Try to detect format: if first part looks like a year (4 digits or >= 100), assume YYYY/MM/DD
+            # if first part is small and third part looks like a year, assume MM/DD/YYYY
+            if jy >= 100 or len(str(jy)) == 4:  # Likely a year in YYYY/MM/DD format
+                pass  # jy, jm, jd are already in correct order
+            elif jy <= 12 and jm <= 31 and (jd >= 100 or len(str(jd)) == 4):  # Likely MM/DD/YYYY format
+                jy, jm, jd = jd, jy, jm
+            else:
+                # Ambiguous, assume YYYY/MM/DD format
+                pass
+
+            # Validate date ranges
+            if not (1 <= jm <= 12):
+                raise ValueError("Invalid month")
+            if not (1 <= jd <= 31):
+                raise ValueError("Invalid day")
+            if jy < 1200 or jy > 1500:  # Reasonable year range for Jalali calendar
+                raise ValueError("Invalid year")
+
+            from persiantools.jdatetime import JalaliDate
+            try:
+                jalali_date = JalaliDate(jy, jm, jd)
+                start_date = jalali_date.to_gregorian()
+            except Exception as e:
+                # If JalaliDate fails, try to provide a more specific error
+                if "day is out of range" in str(e) or "invalid day" in str(e).lower():
+                    raise ValueError(f"Invalid day for Jalali date {jy}/{jm}/{jd}")
+                elif "month is out of range" in str(e) or "invalid month" in str(e).lower():
+                    raise ValueError(f"Invalid month for Jalali date {jy}/{jm}/{jd}")
+                else:
+                    raise ValueError(f"Invalid Jalali date {jy}/{jm}/{jd}: {str(e)}")
+        else:
+            # Parse Gregorian date (YYYY-MM-DD)
+            from datetime import datetime
+            start_date = datetime.strptime(message.text.strip(), "%Y-%m-%d").date()
+
+        # Store start date as string for FSM compatibility
+        await state.update_data(start_date=start_date.strftime("%Y-%m-%d"))
+        calendar_format = "Jalali (YYYY/MM/DD)" if settings['calendar_format'] == 'jalali' else "Gregorian (YYYY-MM-DD)"
+
+        if settings['calendar_format'] == 'jalali':
+            calendar_format = "Jalali (YYYY/MM/DD or MM/DD/YYYY)"
+        else:
+            calendar_format = "Gregorian (YYYY-MM-DD)"
+        text = get_text('enter_end_date', lang, calendar_format=calendar_format)
+        cancel_button = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="reporting")]]
+
+        await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=cancel_button))
+        await state.set_state(CustomReportStates.waiting_for_end_date)
+
+    except (ValueError, AttributeError) as e:
+        error_msg = str(e)
+        text = get_text('invalid_date_format', lang)
+        if settings['calendar_format'] == 'jalali':
+            text += "\n\nJalali (شمسی) formats:\n• YYYY/MM/DD (e.g., 1404/04/04)\n• MM/DD/YYYY (e.g., 04/04/1404)"
+            if error_msg and error_msg != "Invalid format":
+                text += f"\n\nError: {error_msg}"
+        else:
+            text += "\n\nGregorian format:\n• YYYY-MM-DD (e.g., 2025-06-25)"
+            if error_msg and error_msg != "Invalid format":
+                text += f"\n\nError: {error_msg}"
+        cancel_button = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="reporting")]]
+
+        await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=cancel_button))
+
+@dp.message(CustomReportStates.waiting_for_end_date)
+async def process_end_date(message: types.Message, state: FSMContext):
+    """Process the end date input and show custom report."""
+    lang = get_user_lang(message)
+    settings = db.get_user_settings(message.from_user.id)
+
+    try:
+        if settings['calendar_format'] == 'jalali':
+            # Parse Jalali date - try both YYYY/MM/DD and MM/DD/YYYY formats
+            date_text = message.text.strip()
+            parts = date_text.split('/')
+            if len(parts) != 3:
+                raise ValueError("Invalid format")
+
+            jy, jm, jd = map(int, parts)
+
+            # Try to detect format: if first part looks like a year (4 digits or >= 100), assume YYYY/MM/DD
+            # if first part is small and third part looks like a year, assume MM/DD/YYYY
+            if jy >= 100 or len(str(jy)) == 4:  # Likely a year in YYYY/MM/DD format
+                pass  # jy, jm, jd are already in correct order
+            elif jy <= 12 and jm <= 31 and (jd >= 100 or len(str(jd)) == 4):  # Likely MM/DD/YYYY format
+                jy, jm, jd = jd, jy, jm
+            else:
+                # Ambiguous, assume YYYY/MM/DD format
+                pass
+
+            # Validate date ranges
+            if not (1 <= jm <= 12):
+                raise ValueError("Invalid month")
+            if not (1 <= jd <= 31):
+                raise ValueError("Invalid day")
+            if jy < 1200 or jy > 1500:  # Reasonable year range for Jalali calendar
+                raise ValueError("Invalid year")
+
+            from persiantools.jdatetime import JalaliDate
+            try:
+                jalali_date = JalaliDate(jy, jm, jd)
+                end_date = jalali_date.to_gregorian()
+            except Exception as e:
+                # If JalaliDate fails, try to provide a more specific error
+                if "day is out of range" in str(e) or "invalid day" in str(e).lower():
+                    raise ValueError(f"Invalid day for Jalali date {jy}/{jm}/{jd}")
+                elif "month is out of range" in str(e) or "invalid month" in str(e).lower():
+                    raise ValueError(f"Invalid month for Jalali date {jy}/{jm}/{jd}")
+                else:
+                    raise ValueError(f"Invalid Jalali date {jy}/{jm}/{jd}: {str(e)}")
+        else:
+            # Parse Gregorian date (YYYY-MM-DD)
+            from datetime import datetime
+            end_date = datetime.strptime(message.text.strip(), "%Y-%m-%d").date()
+
+        # Get stored start date
+        data = await state.get_data()
+        start_date = data.get('start_date')
+
+        # Ensure start_date is a date object (FSM might serialize it as string)
+        if isinstance(start_date, str):
+            from datetime import datetime
+            start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+        if start_date and end_date < start_date:
+            text = "❌ تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد." if lang == 'fa' else "❌ End date cannot be before start date."
+            calendar_format = "Jalali (YYYY/MM/DD)" if settings['calendar_format'] == 'jalali' else "Gregorian (YYYY-MM-DD)"
+            text += f"\n\n{calendar_format}"
+            cancel_button = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="reporting")]]
+
+            await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=cancel_button))
+            return
+
+        await state.clear()
+
+        # Format dates for display
+        if settings['calendar_format'] == 'jalali':
+            from persiantools.jdatetime import JalaliDate
+            start_jalali = JalaliDate.to_jalali(start_date.year, start_date.month, start_date.day)
+            end_jalali = JalaliDate.to_jalali(end_date.year, end_date.month, end_date.day)
+            start_date_display = f"{start_jalali.year}/{start_jalali.month:02d}/{start_jalali.day:02d}"
+            end_date_display = f"{end_jalali.year}/{end_jalali.month:02d}/{end_jalali.day:02d}"
+        else:
+            start_date_display = start_date.strftime("%Y-%m-%d")
+            end_date_display = end_date.strftime("%Y-%m-%d")
+
+        # Generate custom report
+        await generate_custom_report(message.from_user.id, start_date, end_date, start_date_display, end_date_display, lang)
+
+    except (ValueError, AttributeError) as e:
+        error_msg = str(e)
+        text = get_text('invalid_date_format', lang)
+        if settings['calendar_format'] == 'jalali':
+            text += "\n\nJalali (شمسی) formats:\n• YYYY/MM/DD (e.g., 1404/04/04)\n• MM/DD/YYYY (e.g., 04/04/1404)"
+            if error_msg and error_msg != "Invalid format":
+                text += f"\n\nError: {error_msg}"
+        else:
+            text += "\n\nGregorian format:\n• YYYY-MM-DD (e.g., 2025-06-25)"
+            if error_msg and error_msg != "Invalid format":
+                text += f"\n\nError: {error_msg}"
+        cancel_button = [[InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="reporting")]]
+
+        await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=cancel_button))
+
+async def generate_custom_report(user_id: int, start_date, end_date, start_date_display: str, end_date_display: str, lang: str):
+    """Generate and send custom date range report."""
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+
+    # Get balance report for the range
+    balance_report = db.get_balance_report(user_id, start_date_str, end_date_str)
+
+    # Get card/source balances for the range
+    card_balances = db.get_card_source_balances_in_range(user_id, start_date_str, end_date_str)
+
+    # Get transactions in the range
+    transactions = db.get_transactions_in_range(user_id, start_date_str, end_date_str)
+
+    settings = db.get_user_settings(user_id)
+    currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
+
+    range_text = get_text('custom_range_title', lang, start_date=start_date_display, end_date=end_date_display)
+    text = f"{get_text('reporting_title', lang)} - {range_text}\n\n"
+
+    # Financial summary
+    income = balance_report['income'] or 0
+    expense = balance_report['expense'] or 0
+    balance = balance_report['balance'] or 0
+
+    text += f"{get_text('amount_earned', lang)} {income:,} {currency}\n"
+    text += f"{get_text('amount_spent', lang)} {expense:,} {currency}\n"
+    text += f"{get_text('current_balance', lang)} {balance:,} {currency}\n\n"
+
+    # Card/source balances
+    if card_balances:
+        text += f"{get_text('card_source_balances', lang)}\n"
+        for balance_info in card_balances:
+            text += f"• {balance_info['name']}: {balance_info['end_balance']:,} {currency}\n"
+        text += "\n"
+
+    # Recent transactions
+    if transactions:
+        text += f"{get_text('transactions_in_range', lang)}\n"
+        max_transactions = 10
+
+        for i, transaction in enumerate(transactions[:max_transactions]):
+            trans_id, amount, trans_currency, trans_type, category, trans_date, note, card_source_name, card_number = transaction
+
+            # Handle potential None values
+            amount = amount or 0
+            category = category or ("سایر" if lang == 'fa' else "Other")
+            trans_type = trans_type or "expense"
+            card_source = card_source_name or ""
+
+            # Convert string date to datetime object if needed
+            if isinstance(trans_date, str):
+                from datetime import datetime
+                trans_date = datetime.strptime(trans_date, "%Y-%m-%d").date()
+
+            if settings['calendar_format'] == 'jalali':
+                from persiantools.jdatetime import JalaliDate
+                jalali_date = JalaliDate.to_jalali(trans_date.year, trans_date.month, trans_date.day)
+                date_str = f"{jalali_date.year}/{jalali_date.month:02d}/{jalali_date.day:02d}"
+            else:
+                date_str = trans_date.strftime("%Y-%m-%d")
+
+            type_symbol = "🔼" if trans_type == 'income' else "🔻"
+
+            card_text = f" ({card_source})" if card_source else ""
+            text += f"{type_symbol} {amount:,} {currency} - {category}{card_text} - {date_str}\n"
+
+        if len(transactions) > max_transactions:
+            remaining = len(transactions) - max_transactions
+            text += f"\n... و {remaining} تراکنش دیگر" if lang == 'fa' else f"\n... and {remaining} more transactions"
+    else:
+        text += f"{get_text('no_transactions', lang)}\n"
+
+    buttons = [
+        [InlineKeyboardButton(text=get_text('back', lang), callback_data="reporting")]
+    ]
+
+    await send_menu_message(user_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data.startswith("report_range_"))
 async def show_report(callback: types.CallbackQuery):
@@ -1956,14 +2256,14 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     buttons = [
                         [InlineKeyboardButton(text="🇮🇷 فارسی (Persian)", callback_data="set_lang_fa")],
                         [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
-                        [InlineKeyboardButton(text="🔙 Back", callback_data="settings")]
+                        [InlineKeyboardButton(text=get_text('back', lang), callback_data="settings")]
                     ]
                 else:  # Persian
                     text = "🌐 تغییر زبان\n\nزبان فعلی: فارسی\n\nلطفاً زبان مورد نظر خود را انتخاب کنید:"
                     buttons = [
                         [InlineKeyboardButton(text="🇮🇷 فارسی", callback_data="set_lang_fa")],
                         [InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en")],
-                        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="settings")]
+                        [InlineKeyboardButton(text=get_text('back', lang), callback_data="settings")]
                     ]
 
                 await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -2032,7 +2332,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     if nav_buttons:
                         buttons.append(nav_buttons)
 
-                buttons.append([InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")])
+                buttons.append([InlineKeyboardButton(text=get_text('back', lang), callback_data="admin_panel")])
 
                 await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -2069,7 +2369,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                     text += f"📅 تعداد کل برنامه‌ها: {stats['total_plans']:,}\n"
                     text += f"📂 تعداد کل دسته‌بندی‌ها: {stats['total_categories']:,}\n"
 
-                buttons = [[InlineKeyboardButton(text="🔙 بازگشت" if lang == 'fa' else "🔙 Back", callback_data="admin_panel")]]
+                buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="admin_panel")]]
                 await send_menu_message(message.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
         elif action == "main_menu" or (section == "main" and action == "menu"):
