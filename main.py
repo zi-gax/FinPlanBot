@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import signal
+import os
+import time
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -11,8 +13,11 @@ from aiogram.filters import StateFilter
 from aiogram.exceptions import TelegramBadRequest
 from config import API_token, ADMIN_IDS
 from database import Database
-from ai_parser import ai_parser
+from ai_parser import AIParser
 from translations import get_text
+from dollarprice import get_usd_price
+
+usdprice = get_usd_price()
 
 # Helper to get user language from callback or message
 def get_user_lang(event):
@@ -38,6 +43,7 @@ logging.getLogger('google_genai.models').setLevel(logging.WARNING)
 bot = Bot(token=API_token)
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
+ai_parser = AIParser()
 
 # States
 class TransactionStates(StatesGroup):
@@ -751,16 +757,10 @@ async def plan_main(callback: types.CallbackQuery):
 async def help_cmd(event: types.CallbackQuery | types.Message):
     lang = get_user_lang(event)
     help_text = f"{get_text('help_title', lang)}\n\n{get_text('help_text', lang)}"
-    buttons = [
-        [InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]
-    ]
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=get_text('back', lang), callback_data="main_menu")]])
+    await send_menu_message(event.from_user.id, help_text, reply_markup=kb)
     if isinstance(event, types.CallbackQuery):
-        await send_menu_message(event.from_user.id, help_text, reply_markup=kb)
         await event.answer()
-    else:
-        await send_menu_message(event.from_user.id, help_text, reply_markup=kb)
 
 
 # Data Management Handlers
@@ -3171,10 +3171,7 @@ async def process_plan_time(event: types.Message | types.CallbackQuery, state: F
             pass  # Ignore if message was already deleted
 
     text = get_text('plan_saved', lang)
-    if isinstance(event, types.CallbackQuery):
-        await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
-    else:
-        await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
+    await send_menu_message(event.from_user.id, text, reply_markup=planning_menu_kb(lang))
 
     await state.clear()
 
@@ -3303,44 +3300,176 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                 await send_menu_message(message.from_user.id, text, reply_markup=finance_menu_kb(lang))
 
             elif action == "add_transaction":
-                # Add transaction directly
-                amount = result.get("amount", 0)
-                t_type = result.get("type", "expense")
-                category = result.get("category", "سایر" if lang == 'fa' else "Other")
-                t_date = result.get("date", current_date)
-                note = result.get("note", "")
+                # AI-assisted transaction: create a draft and ask follow-up questions only for missing data
+                parsed_amount = result.get("amount")
+                parsed_type = result.get("type")
+                parsed_category = result.get("category")
+                parsed_date = result.get("date") or current_date
+                parsed_note = result.get("note", "")
+                parsed_currency = result.get("currency")
+                parsed_time = result.get("time")
+                parsed_balance = result.get("balance")
+                parsed_party = result.get("party")
+                card_hint = result.get("card_hint")  # last 4 digits if available
 
-                db.add_transaction(message.from_user.id, amount, t_type, category, t_date, note)
+                settings = db.get_user_settings(message.from_user.id)
+                currency = parsed_currency or settings['currency']
 
-                type_text = get_text('expense_type', lang) if t_type == "expense" else get_text('income_type', lang)
-                await message.answer(
-                    f"{get_text('ai_transaction_saved', lang)}\n"
-                    f"{get_text('amount_label', lang)}: {amount:,}\n"
-                    f"{get_text('type_label', lang)}: {type_text}\n"
-                    f"{get_text('category_label', lang)}: {category}\n"
-                    f"{get_text('date_label', lang)}: {t_date}"
+                if not parsed_amount or parsed_amount <= 0:
+                    # Fall back to standard flow to ask amount first
+                    await start_add_transaction(types.CallbackQuery(id="fake", from_user=message.from_user, message=message, data="add_transaction", chat_instance="fake"), state)
+                    return
+
+                # Try to resolve card by hint if present
+                card_source_id = None
+                if card_hint:
+                    try:
+                        cards_sources = db.get_cards_sources(message.from_user.id)
+                        matches = [c for c in cards_sources if c[2] and c[2][-4:] == card_hint]
+                        if len(matches) == 1:
+                            card_source_id = matches[0][0]
+                    except Exception:
+                        pass
+
+                # Seed FSM data
+                await state.update_data(
+                    amount=float(parsed_amount),
+                    currency=currency,
+                    type=parsed_type if parsed_type in ["income", "expense", "transfer"] else None,
+                    category=parsed_category,
+                    date=parsed_date,
+                    description=parsed_note or "",
+                    card_source_id=card_source_id,
+                    time=parsed_time,
+                    balance=parsed_balance,
+                    party=parsed_party,
+                    message_ids=[]
                 )
-                # Send finance menu after successful transaction
-                balance = db.get_current_month_balance(message.from_user.id)
+
+                # Decide next missing field in preferred order: type -> category -> card -> description -> confirm
+                data = await state.get_data()
+                if data.get('type') is None:
+                    # Ask for type
+                    type_buttons = [
+                        [InlineKeyboardButton(text=get_text('expense_type', lang), callback_data="type_expense")],
+                        [InlineKeyboardButton(text=get_text('income_type', lang), callback_data="type_income")]
+                    ]
+                    await message.answer(get_text('select_type', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=type_buttons))
+                    await state.set_state(TransactionStates.waiting_for_type)
+                    return
+
+                if not data.get('category'):
+                    # Present categories just like in process_type
+                    t_type = data['type']
+                    categories = db.get_categories(message.from_user.id, t_type)
+                    if not categories:
+                        if t_type == "expense":
+                            categories = [
+                                get_text('cat_food', lang),
+                                get_text('cat_transport', lang),
+                                get_text('cat_rent', lang),
+                                get_text('cat_entertainment', lang),
+                                get_text('cat_other', lang)
+                            ]
+                        else:
+                            categories = [
+                                get_text('cat_salary', lang),
+                                get_text('cat_bonus', lang),
+                                get_text('cat_investment', lang),
+                                get_text('cat_other', lang)
+                            ]
+                        for cat in categories:
+                            db.add_category(message.from_user.id, cat, t_type)
+                    buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}")] for cat in categories]
+                    buttons.append([InlineKeyboardButton(text=get_text('type_custom_category', lang), callback_data="type_custom_category")])
+                    buttons.append([InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")])
+                    await message.answer(get_text('select_category', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    await state.set_state(TransactionStates.waiting_for_category)
+                    return
+
+                if data.get('card_source_id') is None:
+                    # Ask for card selection
+                    cards_sources = db.get_cards_sources(message.from_user.id)
+                    if not cards_sources:
+                        text = f"{get_text('no_card_source', lang)}\n\n{get_text('add_card_source_guide', lang)}"
+                        buttons = [
+                            [InlineKeyboardButton(text="💳 " + ("مدیریت کارت‌ها/منابع" if lang == 'fa' else "Manage Cards/Sources"), callback_data="manage_cards_sources")],
+                            [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
+                        ]
+                        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                        return
+                    # Build buttons with balances
+                    currency_display = get_text('toman', lang) if currency == 'toman' else get_text('dollar', lang)
+                    buttons = []
+                    for card_source in cards_sources:
+                        card_id, name, card_number, balance = card_source
+                        display_name = name
+                        if card_number:
+                            masked_card = f"****{card_number[-4:]}" if len(card_number) >= 4 else card_number
+                            display_name = f"{name} ({masked_card})"
+                        balance_text = get_text('card_source_balance', lang, balance=balance, currency=currency_display)
+                        button_text = f"{display_name}\n{balance_text}"
+                        buttons.append([InlineKeyboardButton(text=button_text, callback_data=f"card_{card_id}")])
+                    buttons.append([InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")])
+                    await message.answer(get_text('select_card_source', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    await state.set_state(TransactionStates.waiting_for_card_source)
+                    return
+
+                # If description missing, ask (optional)
+                if not data.get('description'):
+                    # Ask optional description compactly with Skip
+                    buttons = [
+                        [InlineKeyboardButton(text=("رد کردن" if lang == 'fa' else "Skip"), callback_data="skip_description")],
+                        [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
+                    ]
+                    await message.answer(get_text('enter_description', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    await state.set_state(TransactionStates.waiting_for_description)
+                    return
+
+                # All required fields present: save immediately (no extra confirmation)
+                settings = db.get_user_settings(message.from_user.id)
+
+                # Normalize date for storage: detect Jalali vs Gregorian by separator and year prefix
+                date_input = data['date']
+                if isinstance(date_input, str) and '/' in date_input and (date_input.strip().startswith('13') or date_input.strip().startswith('14')):
+                    # Looks like Jalali
+                    stored_date = parse_date_input(date_input, 'jalali')
+                else:
+                    stored_date = parse_date_input(date_input, 'gregorian')
+
+                note = data.get('description') or ""
+                # Append time/party/balance hints from AI parse if present in state
+                ai_time = (await state.get_data()).get('time')
+                ai_party = (await state.get_data()).get('party')
+                ai_balance = (await state.get_data()).get('balance')
+                extras = []
+                if ai_time:
+                    extras.append(f"time {ai_time}")
+                if ai_party:
+                    extras.append(f"party {ai_party}")
+                if ai_balance is not None:
+                    extras.append(f"balance {int(ai_balance):,}")
+                if extras:
+                    note = (note + ("\n" if note else "") + " | ".join(extras)).strip()
+
+                db.add_transaction(
+                    user_id=message.from_user.id,
+                    amount=data['amount'],
+                    currency=data['currency'],
+                    type=data['type'],
+                    category=data['category'],
+                    card_source_id=data['card_source_id'],
+                    date=stored_date,
+                    note=note
+                )
+
+                # Acknowledge saved and show finance menu
                 if lang == 'en':
-                    menu_text = (
-                        "💰 Financial Management\n\n"
-                        f"📊 Current Month Status:\n"
-                        f"🔼 Income: {balance['income']:,} Toman\n"
-                        f"🔻 Expense: {balance['expense']:,} Toman\n"
-                        f"⚖️ Balance: {balance['balance']:,} Toman\n\n"
-                        "Please select one of the options below:"
-                    )
-                else:  # Persian
-                    menu_text = (
-                        "💰 بخش مدیریت مالی\n\n"
-                        f"📊 وضعیت ماه جاری:\n"
-                        f"🔼 درآمد: {balance['income']:,} تومان\n"
-                        f"🔻 هزینه: {balance['expense']:,} تومان\n"
-                        f"⚖️ مانده: {balance['balance']:,} تومان\n\n"
-                        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
-                    )
-                await send_menu_message(message.from_user.id, menu_text, reply_markup=finance_menu_kb(lang))
+                    ack = "✅ Transaction saved."
+                else:
+                    ack = "✅ تراکنش ذخیره شد."
+                await message.answer(ack, reply_markup=finance_menu_kb(lang))
+                await state.clear()
 
             elif action == "monthly_report":
                 # Redirect to new reporting system with month range
@@ -3605,10 +3734,29 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
 # Start polling
 async def main():
     # Restart functionality removed
-    # Start polling with retry logic for network errors
-    max_retries = 5
-    retry_delay = 3
-    
+    # Start polling with retry logic for network errors and configurable proxy/IPv4/timeout
+    max_retries = int(os.getenv("BOT_START_MAX_RETRIES", "5"))
+    retry_delay = int(os.getenv("BOT_START_RETRY_DELAY", "3"))
+
+    # Bot is initialized globally without custom proxy/session
+    global bot
+
+    # Preflight: try get_me with retries and backoff to surface early network issues
+    preflight_attempts = int(os.getenv("BOT_PREFLIGHT_RETRIES", "3"))
+    for attempt in range(preflight_attempts):
+        try:
+            _ = await bot.me()
+            logging.info("Bot preflight getMe OK")
+            break
+        except Exception as e:
+            if attempt < preflight_attempts - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                logging.warning(f"Preflight getMe failed (attempt {attempt+1}/{preflight_attempts}): {e}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                logging.error(f"Preflight getMe failed after {preflight_attempts} attempts: {e}")
+                # Continue to polling loop; startup retry logic will handle further
+
     # Create an asyncio.Event that will be set when a shutdown signal is received.
     stop_event = asyncio.Event()
 
@@ -3658,7 +3806,11 @@ async def main():
 
                 # Properly close bot and dispatcher
                 logging.info("Closing bot session...")
-                await bot.session.close()
+                try:
+                    if hasattr(bot, 'session') and bot.session:
+                        await bot.session.close()
+                except Exception as ce:
+                    logging.debug(f"Error closing session during shutdown: {ce}")
                 logging.info("Bot shutdown complete.")
                 return  # Exit the function completely, don't retry
 
@@ -3676,7 +3828,11 @@ async def main():
             # Check if shutdown was requested during the exception handling
             if stop_event.is_set():
                 logging.info("Shutdown requested during error recovery, exiting...")
-                await bot.session.close()
+                try:
+                    if hasattr(bot, 'session') and bot.session:
+                        await bot.session.close()
+                except Exception as ce:
+                    logging.debug(f"Error closing session during shutdown: {ce}")
                 logging.info("Bot shutdown complete.")
                 return
 
@@ -3742,6 +3898,5 @@ if __name__ == "__main__":
             pass  # Ignore cleanup errors during fatal shutdown
 
         # Give time for error logging before exit
-        import time
         time.sleep(2)
         raise

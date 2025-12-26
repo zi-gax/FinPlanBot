@@ -1,5 +1,10 @@
 import sqlite3
-from datetime import datetime
+from datetime import date
+from decimal import Decimal, getcontext, ROUND_HALF_EVEN
+
+# High precision for money calculations
+# Increase precision to avoid intermediate rounding errors during conversions
+getcontext().prec = 50
 
 class Database:
     def __init__(self, db_file="finplan.db"):
@@ -147,19 +152,31 @@ class Database:
         return {'currency': result[0], 'calendar_format': result[1]}
 
     def set_user_currency(self, user_id, currency):
-        """Set user's preferred currency."""
-        self.cursor.execute("""
-            INSERT OR REPLACE INTO user_settings (user_id, currency)
+        """Set user's preferred currency without overwriting other settings."""
+        # Use SQLite UPSERT to update only the currency column
+        self.cursor.execute(
+            """
+            INSERT INTO user_settings (user_id, currency)
             VALUES (?, ?)
-        """, (user_id, currency))
+            ON CONFLICT(user_id) DO UPDATE SET
+                currency = excluded.currency
+            """,
+            (user_id, currency),
+        )
         self.conn.commit()
 
     def set_user_calendar_format(self, user_id, calendar_format):
-        """Set user's preferred calendar format."""
-        self.cursor.execute("""
-            INSERT OR REPLACE INTO user_settings (user_id, calendar_format)
+        """Set user's preferred calendar format without overwriting other settings."""
+        # Use SQLite UPSERT to update only the calendar_format column
+        self.cursor.execute(
+            """
+            INSERT INTO user_settings (user_id, calendar_format)
             VALUES (?, ?)
-        """, (user_id, calendar_format))
+            ON CONFLICT(user_id) DO UPDATE SET
+                calendar_format = excluded.calendar_format
+            """,
+            (user_id, calendar_format),
+        )
         self.conn.commit()
 
     # Card/Source operations
@@ -183,13 +200,14 @@ class Database:
         return self.cursor.fetchall()
 
     def get_card_source(self, card_source_id):
-        """Get a specific card/source by ID."""
+        """Get a specific card/source by ID. Returns tuple (id, name, card_number, balance) or None."""
         self.cursor.execute("""
             SELECT id, name, card_number, balance
             FROM cards_sources
             WHERE id = ?
         """, (card_source_id,))
-        return self.cursor.fetchone()
+        result = self.cursor.fetchone()
+        return result if result else None
 
     def update_card_source(self, card_source_id, name=None, card_number=None):
         """Update card/source information."""
@@ -214,15 +232,91 @@ class Database:
 
     # Transaction operations (enhanced)
     def add_transaction(self, user_id, amount, currency, type, category, card_source_id, date, note=None):
-        self.cursor.execute("""
+        self.cursor.execute(
+            """
             INSERT INTO transactions (user_id, amount, currency, type, category, card_source_id, date, note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, amount, currency, type, category, card_source_id, date, note))
+            """,
+            (user_id, amount, currency, type, category, card_source_id, date, note),
+        )
 
-        # Update card/source balance
-        self.update_card_balance(card_source_id, amount, type)
+        # Update card/source balance only if a valid card/source is specified
+        if card_source_id is not None:
+            self.update_card_balance(card_source_id, amount, type)
 
         self.conn.commit()
+
+    def convert_user_currency(self, user_id, from_currency, to_currency, usd_price):
+        """Convert all transactions for a user from one currency to another using `usd_price`.
+
+        - toman -> dollar: amount = amount / usd_price (kept to cents)
+        - dollar -> toman: amount = amount * usd_price (kept as whole tomans)
+
+        Uses Decimal for accuracy. Updates transactions' `amount` and `currency`,
+        then recalculates `cards_sources.balance` by summing transactions with Decimal.
+        """
+        if from_currency == to_currency:
+            return
+
+        if usd_price is None:
+            raise ValueError('usd_price must be provided for currency conversion')
+
+        usd_d = Decimal(str(usd_price))
+
+        try:
+            self.conn.execute('BEGIN')
+
+            if from_currency == 'toman' and to_currency == 'dollar':
+                self.cursor.execute("SELECT id, amount FROM transactions WHERE user_id = ? AND currency = 'toman'", (user_id,))
+                rows = self.cursor.fetchall()
+                for tid, amt in rows:
+                    amt_d = Decimal(str(amt or '0'))
+                    if usd_d == 0:
+                        new_amt = Decimal('0.00')
+                    else:
+                        # quantize to 5 decimal places
+                        new_amt = (amt_d / usd_d).quantize(Decimal('0.0000000000000001'), rounding=ROUND_HALF_EVEN)
+                    # store numeric: float with 5 decimals
+                    self.cursor.execute("UPDATE transactions SET amount = ?, currency = 'dollar' WHERE id = ?", (float(new_amt), tid))
+
+            elif from_currency == 'dollar' and to_currency == 'toman':
+                self.cursor.execute("SELECT id, amount FROM transactions WHERE user_id = ? AND currency = 'dollar'", (user_id,))
+                rows = self.cursor.fetchall()
+                for tid, amt in rows:
+                    amt_d = Decimal(str(amt or '0'))
+                    new_amt = (amt_d * usd_d).quantize(Decimal('1'), rounding=ROUND_HALF_EVEN)
+                    # store numeric: integer tomans
+                    self.cursor.execute("UPDATE transactions SET amount = ?, currency = 'toman' WHERE id = ?", (int(new_amt), tid))
+
+            # Recalculate balances per card using Decimal sums
+            self.cursor.execute("SELECT id FROM cards_sources WHERE user_id = ?", (user_id,))
+            card_ids = [r[0] for r in self.cursor.fetchall()]
+            for card_id in card_ids:
+                self.cursor.execute("SELECT amount, currency, type FROM transactions WHERE card_source_id = ? AND user_id = ?", (card_id, user_id))
+                total = Decimal('0')
+                for row in self.cursor.fetchall():
+                    amt, cur, ttype = row
+                    amt_d = Decimal(str(amt or '0'))
+                    if ttype == 'income':
+                        total += amt_d
+                    else:
+                        total -= amt_d
+
+                # Determine user's preferred currency to decide formatting
+                settings = self.get_user_settings(user_id)
+                user_currency = settings.get('currency', 'toman')
+                if user_currency == 'dollar':
+                    # keep 5 decimal places for dollar balances
+                    bal_to_store = total.quantize(Decimal('0.00001'), rounding=ROUND_HALF_EVEN)
+                    self.cursor.execute("UPDATE cards_sources SET balance = ? WHERE id = ?", (float(bal_to_store), card_id))
+                else:
+                    bal_to_store = total.quantize(Decimal('1'), rounding=ROUND_HALF_EVEN)
+                    self.cursor.execute("UPDATE cards_sources SET balance = ? WHERE id = ?", (int(bal_to_store), card_id))
+
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_monthly_report(self, user_id, month, year):
         # Fetch total income and expense for the given month
@@ -235,7 +329,6 @@ class Database:
     
     def get_current_month_balance(self, user_id):
         """Get current month income, expense, and balance."""
-        from datetime import date
         today = date.today()
         report = self.get_monthly_report(user_id, today.month, today.year)
         
