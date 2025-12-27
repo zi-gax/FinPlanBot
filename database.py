@@ -276,8 +276,8 @@ class Database:
                     else:
                         # quantize to 5 decimal places
                         new_amt = (amt_d / usd_d).quantize(Decimal('0.0000000000000001'), rounding=ROUND_HALF_EVEN)
-                    # store numeric: float with 5 decimals
-                    self.cursor.execute("UPDATE transactions SET amount = ?, currency = 'dollar' WHERE id = ?", (float(new_amt), tid))
+                    # store full-precision decimal string for dollar amounts (preserve 16 decimals)
+                    self.cursor.execute("UPDATE transactions SET amount = ?, currency = 'dollar' WHERE id = ?", (str(new_amt), tid))
 
             elif from_currency == 'dollar' and to_currency == 'toman':
                 self.cursor.execute("SELECT id, amount FROM transactions WHERE user_id = ? AND currency = 'dollar'", (user_id,))
@@ -292,24 +292,23 @@ class Database:
             self.cursor.execute("SELECT id FROM cards_sources WHERE user_id = ?", (user_id,))
             card_ids = [r[0] for r in self.cursor.fetchall()]
             for card_id in card_ids:
-                self.cursor.execute("SELECT amount, currency, type FROM transactions WHERE card_source_id = ? AND user_id = ?", (card_id, user_id))
+                self.cursor.execute("SELECT amount, type FROM transactions WHERE card_source_id = ? AND user_id = ?", (card_id, user_id))
                 total = Decimal('0')
                 for row in self.cursor.fetchall():
-                    amt, cur, ttype = row
+                    amt, ttype = row
                     amt_d = Decimal(str(amt or '0'))
                     if ttype == 'income':
                         total += amt_d
                     else:
                         total -= amt_d
 
-                # Determine user's preferred currency to decide formatting
-                settings = self.get_user_settings(user_id)
-                user_currency = settings.get('currency', 'toman')
-                if user_currency == 'dollar':
-                    # keep 5 decimal places for dollar balances
+                # Format balance based on target currency
+                if to_currency == 'dollar':
+                    # keep decimal places for dollar balances
                     bal_to_store = total.quantize(Decimal('0.00001'), rounding=ROUND_HALF_EVEN)
                     self.cursor.execute("UPDATE cards_sources SET balance = ? WHERE id = ?", (float(bal_to_store), card_id))
                 else:
+                    # integer tomans
                     bal_to_store = total.quantize(Decimal('1'), rounding=ROUND_HALF_EVEN)
                     self.cursor.execute("UPDATE cards_sources SET balance = ? WHERE id = ?", (int(bal_to_store), card_id))
 

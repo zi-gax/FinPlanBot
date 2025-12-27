@@ -16,8 +16,23 @@ from database import Database
 from ai_parser import AIParser
 from translations import get_text
 from dollarprice import get_usd_price
+from decimal import Decimal
 
 usdprice = get_usd_price()
+
+
+def format_amount(val):
+    """Format a numeric value for display with thousands separator and 2 decimals."""
+    try:
+        if val is None:
+            return "0.00"
+        v = Decimal(str(val))
+        return f"{v:,.2f}"
+    except Exception:
+        try:
+            return format(float(val), ",.2f")
+        except Exception:
+            return str(val)
 
 # Helper to get user language from callback or message
 def get_user_lang(event):
@@ -246,7 +261,7 @@ async def manage_cards_sources_menu(callback: types.CallbackQuery, state: FSMCon
                 masked_card = f"****{card_number[-4:]}" if len(card_number) >= 4 else card_number
                 display_name = f"{name} ({masked_card})"
 
-            balance_text = get_text('card_source_balance', lang, balance=balance, currency=currency)
+            balance_text = get_text('card_source_balance', lang, balance=format_amount(balance), currency=currency)
             button_text = f"{display_name}\n{balance_text}"
 
             buttons.append([InlineKeyboardButton(text=button_text, callback_data=f"edit_card_{card_id}")])
@@ -395,7 +410,7 @@ async def edit_card_source_menu(callback: types.CallbackQuery):
     card_display = f"****{card_number[-4:]}" if card_number and len(card_number) >= 4 else (card_number or "بدون شماره کارت" if lang == 'fa' else "No card number")
 
     if lang == 'en':
-        text = f"💳 Edit Card/Source\n\nName: {name}\nCard: {card_display}\nBalance: {balance:,} {currency}\n\nSelect action:"
+        text = f"💳 Edit Card/Source\n\nName: {name}\nCard: {card_display}\nBalance: {format_amount(balance)} {currency}\n\nSelect action:"
         buttons = [
             [InlineKeyboardButton(text="✏️ Edit Name", callback_data=f"edit_name_{card_id}")],
             [InlineKeyboardButton(text="💳 Edit Card Number", callback_data=f"edit_card_number_{card_id}")],
@@ -403,7 +418,7 @@ async def edit_card_source_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text=get_text('back', lang), callback_data="manage_cards_sources")]
         ]
     else:
-        text = f"💳 ویرایش کارت/منبع\n\nنام: {name}\nکارت: {card_display}\nموجودی: {balance:,} {currency}\n\nاقدام مورد نظر را انتخاب کنید:"
+        text = f"💳 ویرایش کارت/منبع\n\nنام: {name}\nکارت: {card_display}\nموجودی: {format_amount(balance)} {currency}\n\nاقدام مورد نظر را انتخاب کنید:"
         buttons = [
             [InlineKeyboardButton(text="✏️ ویرایش نام", callback_data=f"edit_name_{card_id}")],
             [InlineKeyboardButton(text="💳 ویرایش شماره کارت", callback_data=f"edit_card_number_{card_id}")],
@@ -635,8 +650,39 @@ async def set_currency(callback: types.CallbackQuery):
     """Set user's currency preference."""
     lang = db.get_user_language(callback.from_user.id)
     currency = callback.data.replace("set_currency_", "")
-
-    db.set_user_currency(callback.from_user.id, currency)
+    
+    # Get current user currency before change
+    current_settings = db.get_user_settings(callback.from_user.id)
+    old_currency = current_settings['currency']
+    
+    # Only convert if currency is actually changing
+    if old_currency != currency:
+        try:
+            # Get current USD price for conversion
+            current_usd_price = usdprice
+            if current_usd_price is None:
+                current_usd_price = get_usd_price()
+            
+            if current_usd_price is None or current_usd_price <= 0:
+                raise ValueError('Invalid USD price')
+            
+            # Convert all transactions from old currency to new currency
+            db.convert_user_currency(callback.from_user.id, old_currency, currency, current_usd_price)
+            # Update currency setting AFTER successful conversion
+            db.set_user_currency(callback.from_user.id, currency)
+        except Exception as e:
+            logging.error(f"Currency conversion error for user {callback.from_user.id}: {e}")
+            # Still update currency preference even if conversion fails
+            db.set_user_currency(callback.from_user.id, currency)
+            currency_name = get_text('currency_toman', lang) if currency == 'toman' else get_text('currency_dollar', lang)
+            text = f"⚠️ {get_text('currency_changed', lang, currency=currency_name)}\n\n{get_text('conversion_error', lang)}"
+            buttons = [[InlineKeyboardButton(text=get_text('back', lang), callback_data="financial_settings")]]
+            await send_menu_message(callback.from_user.id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+            await callback.answer()
+            return
+    else:
+        # Currency didn't change, just update preference
+        db.set_user_currency(callback.from_user.id, currency)
 
     currency_name = get_text('currency_toman', lang) if currency == 'toman' else get_text('currency_dollar', lang)
     text = get_text('currency_changed', lang, currency=currency_name)
@@ -998,7 +1044,7 @@ async def send_menu_message(user_id: int, text: str, reply_markup=None):
                 logging.debug(f"Could not delete previous menu message: {e}")
 
     # Send the new menu message
-    sent_message = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+        sent_message = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup, disable_notification=True)
 
     # Store the new message ID
     db.set_last_menu_message_id(user_id, sent_message.message_id)
@@ -1055,7 +1101,7 @@ async def process_amount(message: types.Message, state: FSMContext):
         await state.update_data(message_ids=message_ids)
         return
 
-    text = f"{get_text('amount_label', lang)}: {amount:,} {currency_display}\n\n{get_text('select_card_source', lang)}"
+    text = f"{get_text('amount_label', lang)}: {format_amount(amount)} {currency_display}\n\n{get_text('select_card_source', lang)}"
     buttons = []
     for card_source in cards_sources:
         card_id, name, card_number, balance = card_source
@@ -1065,7 +1111,7 @@ async def process_amount(message: types.Message, state: FSMContext):
             masked_card = f"****{card_number[-4:]}" if len(card_number) >= 4 else card_number
             display_name = f"{name} ({masked_card})"
 
-        balance_text = get_text('card_source_balance', lang, balance=balance, currency=currency_display)
+        balance_text = get_text('card_source_balance', lang, balance=format_amount(balance), currency=currency_display)
         button_text = f"{display_name}\n{balance_text}"
         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f"card_{card_id}")])
 
@@ -1114,7 +1160,7 @@ async def process_card_source(callback: types.CallbackQuery, state: FSMContext):
     amount = data['amount']
     currency_display = get_text('toman', lang) if data['currency'] == 'toman' else get_text('dollar', lang)
 
-    text = f"{get_text('amount_label', lang)}: {amount:,} {currency_display}\n"
+    text = f"{get_text('amount_label', lang)}: {format_amount(amount)} {currency_display}\n"
     text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n\n"  # card_source[1] is name
     if calendar_format == 'jalali':
         text += f"{get_text('enter_date', lang, calendar_format=calendar_display)}\n\n"
@@ -1176,7 +1222,7 @@ async def process_date(event, state: FSMContext):
     card_source = db.get_card_source(data['card_source_id'])
 
     text = f"{get_text('transaction_details', lang)}\n\n"
-    text += f"{get_text('amount_label', lang)}: {data['amount']:,} {currency_display}\n"
+    text += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
     text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
     text += f"{get_text('date_label', lang)}: {selected_date}\n\n"
     text += f"{get_text('enter_description', lang)}"
@@ -1216,7 +1262,7 @@ async def process_description_finish(event, state: FSMContext, description):
     card_source = db.get_card_source(data['card_source_id'])
 
     text = f"{get_text('transaction_details', lang)}\n\n"
-    text += f"{get_text('amount_label', lang)}: {data['amount']:,} {currency_display}\n"
+    text += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
     text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
     text += f"{get_text('date_label', lang)}: {data['date']}\n"
     if data.get('description'):
@@ -1281,7 +1327,7 @@ async def process_type(callback: types.CallbackQuery, state: FSMContext):
             db.add_category(callback.from_user.id, cat, t_type)
 
     text = f"{get_text('transaction_details', lang)}\n\n"
-    text += f"{get_text('amount_label', lang)}: {amount:,} {currency_display}\n"
+    text += f"{get_text('amount_label', lang)}: {format_amount(amount)} {currency_display}\n"
     text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
     text += f"{get_text('currency_label', lang)}: {currency_display}\n"
     text += f"{get_text('date_label', lang)}: {data['date']}\n"
@@ -1322,7 +1368,7 @@ async def process_category(callback: types.CallbackQuery, state: FSMContext):
     settings = db.get_user_settings(callback.from_user.id)
     display_date = format_date_for_display(data['date'], settings['calendar_format'], lang)
 
-    summary += f"{get_text('amount_label', lang)}: {data['amount']:,} {currency_display}\n"
+    summary += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
     summary += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
     summary += f"{get_text('currency_label', lang)}: {currency_display}\n"
     summary += f"{get_text('type_label', lang)}: {type_text}\n"
@@ -1442,7 +1488,7 @@ async def process_custom_category(message: types.Message, state: FSMContext):
     settings = db.get_user_settings(message.from_user.id)
     display_date = format_date_for_display(data['date'], settings['calendar_format'], lang)
 
-    summary += f"{get_text('amount_label', lang)}: {data['amount']:,} {currency_display}\n"
+    summary += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
     summary += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
     summary += f"{get_text('currency_label', lang)}: {currency_display}\n"
     summary += f"{get_text('type_label', lang)}: {type_text}\n"
@@ -1497,13 +1543,13 @@ async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
         text = (
             f"{get_text('transaction_saved', lang)}\n\n"
             f"{get_text('balance_updated', lang, balance=card_source[3], currency=currency_display)}\n\n"
-            f"💰 {card_source[1]} balance: {card_source[3]:,} {currency_display}"
+            f"💰 {card_source[1]} balance: {format_amount(card_source[3])} {currency_display}"
         )
     else:
         text = (
             f"{get_text('transaction_saved', lang)}\n\n"
             f"{get_text('balance_updated', lang, balance=card_source[3], currency=currency_display)}\n\n"
-            f"💰 موجودی {card_source[1]}: {card_source[3]:,} {currency_display}"
+            f"💰 موجودی {card_source[1]}: {format_amount(card_source[3])} {currency_display}"
         )
     await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
 
@@ -1891,7 +1937,7 @@ def format_transactions_page(transactions, page, per_page, lang, currency, setti
         # Format date for display
         display_date = format_date_for_display(trans_date, settings['calendar_format'], lang)
 
-        text += f"{type_emoji} {amount:,} {currency} - {category} - {card_display} - {display_date}\n"
+        text += f"{type_emoji} {format_amount(amount)} {currency} - {category} - {card_display} - {display_date}\n"
         if note:
             text += f"   💬 {note}\n"
 
@@ -2014,9 +2060,9 @@ def generate_csv_export(file_path: str, balance_report: dict, card_balances: lis
         writer.writerow(["FINANCIAL SUMMARY"])
         currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
         writer.writerow(['Metric' if lang == 'en' else 'متریک', 'Value' if lang == 'en' else 'مقدار'])
-        writer.writerow([get_text('amount_earned', lang), f"{balance_report['income'] or 0:,} {currency}"])
-        writer.writerow([get_text('amount_spent', lang), f"{balance_report['expense'] or 0:,} {currency}"])
-        writer.writerow([get_text('current_balance', lang), f"{balance_report['balance'] or 0:,} {currency}"])
+        writer.writerow([get_text('amount_earned', lang), f"{format_amount(balance_report['income'] or 0)} {currency}"])
+        writer.writerow([get_text('amount_spent', lang), f"{format_amount(balance_report['expense'] or 0)} {currency}"])
+        writer.writerow([get_text('current_balance', lang), f"{format_amount(balance_report['balance'] or 0)} {currency}"])
         writer.writerow([])
 
         # Write card/source balances section
@@ -2082,11 +2128,11 @@ def generate_excel_export(file_path: str, balance_report: dict, card_balances: l
         currency = get_text('toman', lang) if settings['currency'] == 'toman' else get_text('dollar', lang)
         summary_data = [
             {'Metric' if lang == 'en' else 'متریک': get_text('amount_earned', lang),
-             'Value' if lang == 'en' else 'مقدار': f"{balance_report['income'] or 0:,} {currency}"},
+             'Value' if lang == 'en' else 'مقدار': f"{format_amount(balance_report['income'] or 0)} {currency}"},
             {'Metric' if lang == 'en' else 'متریک': get_text('amount_spent', lang),
-             'Value' if lang == 'en' else 'مقدار': f"{balance_report['expense'] or 0:,} {currency}"},
+             'Value' if lang == 'en' else 'مقدار': f"{format_amount(balance_report['expense'] or 0)} {currency}"},
             {'Metric' if lang == 'en' else 'متریک': get_text('current_balance', lang),
-             'Value' if lang == 'en' else 'مقدار': f"{balance_report['balance'] or 0:,} {currency}"}
+             'Value' if lang == 'en' else 'مقدار': f"{format_amount(balance_report['balance'] or 0)} {currency}"}
         ]
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary' if lang == 'en' else 'خلاصه', index=False)
@@ -2347,9 +2393,9 @@ def generate_pdf_export(file_path: str, balance_report: dict, card_balances: lis
     elements.append(Paragraph(summary_title, section_style))
 
     summary_lines = [
-        f"💵 {get_text('amount_earned', pdf_lang)}: <b>{balance_report['income'] or 0:,} {currency}</b>",
-        f"💸 {get_text('amount_spent', pdf_lang)}: <b>{balance_report['expense'] or 0:,} {currency}</b>",
-        f"⚖️ {get_text('current_balance', pdf_lang)}: <b>{balance_report['balance'] or 0:,} {currency}</b>"
+        f"💵 {get_text('amount_earned', pdf_lang)}: <b>{format_amount(balance_report['income'] or 0)} {currency}</b>",
+        f"💸 {get_text('amount_spent', pdf_lang)}: <b>{format_amount(balance_report['expense'] or 0)} {currency}</b>",
+        f"⚖️ {get_text('current_balance', pdf_lang)}: <b>{format_amount(balance_report['balance'] or 0)} {currency}</b>"
     ]
 
     for line in summary_lines:
@@ -2372,9 +2418,9 @@ def generate_pdf_export(file_path: str, balance_report: dict, card_balances: lis
             end_balance_text = 'End Balance'
 
             card_line = f"• <b>{card_display}</b><br/>"
-            card_line += f"  📊 {start_balance_text}: {card['start_balance'] or 0:,} {currency}<br/>"
-            card_line += f"  📈 {net_change_text}: {card['net_change'] or 0:,} {currency}<br/>"
-            card_line += f"  💰 {end_balance_text}: {card['end_balance'] or 0:,} {currency}"
+            card_line += f"  📊 {start_balance_text}: {format_amount(card['start_balance'] or 0)} {currency}<br/>"
+            card_line += f"  📈 {net_change_text}: {format_amount(card['net_change'] or 0)} {currency}<br/>"
+            card_line += f"  💰 {end_balance_text}: {format_amount(card['end_balance'] or 0)} {currency}"
 
             card_line = str(card_line)  # Ensure Unicode string
             elements.append(Paragraph(card_line, summary_style))
@@ -2415,7 +2461,7 @@ def generate_pdf_export(file_path: str, balance_report: dict, card_balances: lis
                     card_display += f" (****{card_number[-4:]})"
 
                 # Transaction line
-                trans_line = f"{type_emoji} <b>{amount or 0:,} {trans_currency or currency}</b> - {category} - {card_display}"
+                trans_line = f"{type_emoji} <b>{format_amount(amount or 0)} {trans_currency or currency}</b> - {category} - {card_display}"
                 elements.append(Paragraph(trans_line, transaction_style))
 
                 # Note if exists
@@ -2676,15 +2722,15 @@ async def generate_custom_report(user_id: int, start_date, end_date, start_date_
     expense = balance_report['expense'] or 0
     balance = balance_report['balance'] or 0
 
-    text += f"{get_text('amount_earned', lang)} {income:,} {currency}\n"
-    text += f"{get_text('amount_spent', lang)} {expense:,} {currency}\n"
-    text += f"{get_text('current_balance', lang)} {balance:,} {currency}\n\n"
+    text += f"{get_text('amount_earned', lang)} {format_amount(income)} {currency}\n"
+    text += f"{get_text('amount_spent', lang)} {format_amount(expense)} {currency}\n"
+    text += f"{get_text('current_balance', lang)} {format_amount(balance)} {currency}\n\n"
 
     # Card/source balances
     if card_balances:
         text += f"{get_text('card_source_balances', lang)}\n"
         for balance_info in card_balances:
-            text += f"• {balance_info['name']}: {balance_info['end_balance']:,} {currency}\n"
+            text += f"• {balance_info['name']}: {format_amount(balance_info['end_balance'] or 0)} {currency}\n"
         text += "\n"
 
     # Recent transactions
@@ -2797,9 +2843,9 @@ async def show_report(callback: types.CallbackQuery):
     income = balance_report['income'] or 0
     expense = balance_report['expense'] or 0
     balance = balance_report['balance'] or 0
-    text += f"{get_text('amount_earned', lang)}: {income:,} {currency}\n"
-    text += f"{get_text('amount_spent', lang)}: {expense:,} {currency}\n"
-    text += f"{get_text('current_balance', lang)}: {balance:,} {currency}\n\n"
+    text += f"{get_text('amount_earned', lang)}: {format_amount(income)} {currency}\n"
+    text += f"{get_text('amount_spent', lang)}: {format_amount(expense)} {currency}\n"
+    text += f"{get_text('current_balance', lang)}: {format_amount(balance)} {currency}\n\n"
 
     # Card/Source balances
     if card_balances:
@@ -2812,9 +2858,9 @@ async def show_report(callback: types.CallbackQuery):
             end_balance = card['end_balance'] or 0
             net_change = card['net_change'] or 0
 
-            text += f"• {card_display}: {end_balance:,} {currency}"
+            text += f"• {card_display}: {format_amount(end_balance)} {currency}"
             if net_change != 0:
-                change_text = f"(تغییر: {'+' if net_change > 0 else ''}{net_change:,})" if lang == 'fa' else f"(Change: {'+' if net_change > 0 else ''}{net_change:,})"
+                change_text = f"(تغییر: {'+' if net_change > 0 else ''}{format_amount(net_change)})" if lang == 'fa' else f"(Change: {'+' if net_change > 0 else ''}{format_amount(net_change)})"
                 text += f" {change_text}"
             text += "\n"
         text += "\n"
@@ -2841,7 +2887,7 @@ async def show_report(callback: types.CallbackQuery):
                 # Format date for display
                 display_date = format_date_for_display(trans_date, settings['calendar_format'], lang)
 
-                text += f"{type_emoji} {amount:,} {currency} - {category} - {card_display} - {display_date}\n"
+                text += f"{type_emoji} {format_amount(amount)} {currency} - {category} - {card_display} - {display_date}\n"
                 if note:
                     text += f"   💬 {note}\n"
             buttons = [
@@ -2945,9 +2991,9 @@ async def handle_report_pagination(callback: types.CallbackQuery):
         income = balance_report['income'] or 0
         expense = balance_report['expense'] or 0
         balance = balance_report['balance'] or 0
-        text += f"{get_text('amount_earned', lang)}: {income:,} {currency}\n"
-        text += f"{get_text('amount_spent', lang)}: {expense:,} {currency}\n"
-        text += f"{get_text('current_balance', lang)}: {balance:,} {currency}\n\n"
+        text += f"{get_text('amount_earned', lang)}: {format_amount(income)} {currency}\n"
+        text += f"{get_text('amount_spent', lang)}: {format_amount(expense)} {currency}\n"
+        text += f"{get_text('current_balance', lang)}: {format_amount(balance)} {currency}\n\n"
 
         # Card/Source balances
         if card_balances:
@@ -2960,9 +3006,9 @@ async def handle_report_pagination(callback: types.CallbackQuery):
                 end_balance = card['end_balance'] or 0
                 net_change = card['net_change'] or 0
 
-                text += f"• {card_display}: {end_balance:,} {currency}"
+                text += f"• {card_display}: {format_amount(end_balance)} {currency}"
                 if net_change != 0:
-                    change_text = f"(تغییر: {'+' if net_change > 0 else ''}{net_change:,})" if lang == 'fa' else f"(Change: {'+' if net_change > 0 else ''}{net_change:,})"
+                    change_text = f"(تغییر: {'+' if net_change > 0 else ''}{format_amount(net_change)})" if lang == 'fa' else f"(Change: {'+' if net_change > 0 else ''}{format_amount(net_change)})"
                     text += f" {change_text}"
                 text += "\n"
             text += "\n"
@@ -3407,7 +3453,7 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
                         if card_number:
                             masked_card = f"****{card_number[-4:]}" if len(card_number) >= 4 else card_number
                             display_name = f"{name} ({masked_card})"
-                        balance_text = get_text('card_source_balance', lang, balance=balance, currency=currency_display)
+                        balance_text = get_text('card_source_balance', lang, balance=format_amount(balance), currency=currency_display)
                         button_text = f"{display_name}\n{balance_text}"
                         buttons.append([InlineKeyboardButton(text=button_text, callback_data=f"card_{card_id}")])
                     buttons.append([InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")])
