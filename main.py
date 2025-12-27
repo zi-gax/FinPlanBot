@@ -658,10 +658,8 @@ async def set_currency(callback: types.CallbackQuery):
     # Only convert if currency is actually changing
     if old_currency != currency:
         try:
-            # Get current USD price for conversion
-            current_usd_price = usdprice
-            if current_usd_price is None:
-                current_usd_price = get_usd_price()
+            # Ensure we check for an updated USD price now (hourly cache handled inside)
+            current_usd_price = get_usd_price()
             
             if current_usd_price is None or current_usd_price <= 0:
                 raise ValueError('Invalid USD price')

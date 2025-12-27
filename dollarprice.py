@@ -1,6 +1,6 @@
 import re
 import json
-from datetime import date
+from datetime import date, datetime
 import os
 import requests
 
@@ -32,30 +32,49 @@ def fetch_usd_price():
 
 
 def get_usd_price():
+    """Return cached USD price if present for the current hour, otherwise fetch.
+
+    The cache now uses an hourly `timestamp` (YYYY-MM-DDTHH). For backward
+    compatibility we also accept the older daily `date` key.
+    """
     today = str(date.today())  # مثال: 2025-01-15
+    now = datetime.now()
+    current_hour = now.strftime("%Y-%m-%dT%H")
 
     # اگر فایل وجود داره
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except Exception:
+                data = {}
 
-        # اگر مال امروز بود
-        if data.get("date") == today:
+        # If we have an hourly timestamp, check its age (in seconds)
+        ts = data.get("timestamp")
+        if ts:
+            try:
+                stored_dt = datetime.strptime(ts, "%Y-%m-%dT%H")
+                age_seconds = (now - stored_dt).total_seconds()
+                if age_seconds < 3600:
+                    return data.get("price")
+            except Exception:
+                # parsing error => ignore and fetch new price
+                pass
+
+        # Backward-compatibility: if only daily `date` exists and it's today,
+        # return it (older installs) — otherwise we'll fetch new price.
+        if not ts and data.get("date") == today and data.get("price") is not None:
             return data.get("price")
 
-    # اگر فایل نبود یا تاریخ قدیمی بود → قیمت جدید
+    # فایل وجود ندارد یا cache قدیمی است → قیمت جدید
     price = fetch_usd_price()
 
     if price is None:
         return 135000
 
-    # ذخیره قیمت جدید
+    # ذخیره قیمت جدید with hourly timestamp
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            {"date": today, "price": price},
-            f,
-            ensure_ascii=False
-        )
+        json.dump({"date": today, "timestamp": current_hour, "price": price}, f, ensure_ascii=False)
 
     return price
 
