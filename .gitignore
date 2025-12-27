@@ -3,7 +3,6 @@ venv/
 main.txt
 finplan.db
 .vscode/
-usd_price_data.json
 
 # Environment variables
 .env
