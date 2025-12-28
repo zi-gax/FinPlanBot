@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging.handlers
 import signal
 import os
 import time
@@ -10,8 +11,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import StateFilter
-from aiogram.exceptions import TelegramBadRequest
-from config import API_token, ADMIN_IDS
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from config import (
+    API_token, ADMIN_IDS, LOG_LEVEL, LOG_FILE,
+    NETWORK_RETRY_MAX_ATTEMPTS, NETWORK_RETRY_INITIAL_DELAY,
+    NETWORK_RETRY_MAX_DELAY, NETWORK_RETRY_EXPONENTIAL_BASE,
+    BOT_CONNECTION_TIMEOUT, BOT_READ_TIMEOUT
+)
 from database import Database
 from ai_parser import AIParser
 from translations import get_text
@@ -48,11 +54,113 @@ def is_admin(user_id):
     """Check if user is an admin."""
     return user_id in ADMIN_IDS
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup advanced logging with multiple handlers
+def setup_logging():
+    """Configure logging with console and file handlers."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)  # Capture all levels
+    
+    # Log format
+    log_format = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 1. Console Handler (INFO level) - for terminal output
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(log_format)
+    logger.addHandler(console_handler)
+    
+    # 2. File Handler (DEBUG level) - for detailed file logging
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(log_format)
+    logger.addHandler(file_handler)
+    
+    # 3. Rotating File Handler - auto-rotate when file gets too large
+    # Max 5MB per file, keep last 5 files
+    rotating_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=5*1024*1024,  # 5 MB
+        backupCount=5,  # Keep 5 backup files
+        encoding='utf-8'
+    )
+    rotating_handler.setLevel(logging.WARNING)
+    rotating_handler.setFormatter(log_format)
+    logger.addHandler(rotating_handler)
+    
+    # 4. Suppress verbose logs from external libraries
+    logging.getLogger('google_genai.models').setLevel(logging.WARNING)
+    logging.getLogger('google.generativeai').setLevel(logging.WARNING)
+    logging.getLogger('aiogram').setLevel(logging.WARNING)
+    logging.getLogger('aiohttp').setLevel(logging.WARNING)
+    
+    return logger
 
-# Suppress AFC (Automatic Function Calling) messages from google-genai
-logging.getLogger('google_genai.models').setLevel(logging.WARNING)
+# Initialize logger
+logger = setup_logging()
+
+# Network Resilience Helper
+class ExponentialBackoff:
+    """Exponential backoff calculator for network retries."""
+    
+    def __init__(self, initial_delay=NETWORK_RETRY_INITIAL_DELAY, 
+                 max_delay=NETWORK_RETRY_MAX_DELAY, 
+                 base=NETWORK_RETRY_EXPONENTIAL_BASE):
+        self.initial_delay = initial_delay
+        self.max_delay = max_delay
+        self.base = base
+        self.attempt = 0
+    
+    def get_delay(self):
+        """Calculate delay for current attempt with exponential backoff."""
+        delay = self.initial_delay * (self.base ** self.attempt)
+        delay = min(delay, self.max_delay)
+        self.attempt += 1
+        return delay
+    
+    def reset(self):
+        """Reset attempt counter."""
+        self.attempt = 0
+
+async def with_network_retry(coro, operation_name="operation", max_attempts=NETWORK_RETRY_MAX_ATTEMPTS):
+    """
+    Execute async coroutine with exponential backoff on network errors.
+    
+    Args:
+        coro: Async coroutine to execute
+        operation_name: Name of operation for logging
+        max_attempts: Maximum retry attempts
+    
+    Returns:
+        Result of the coroutine
+    """
+    backoff = ExponentialBackoff()
+    last_error = None
+    
+    for attempt in range(max_attempts):
+        try:
+            return await coro
+        except (TelegramNetworkError, asyncio.TimeoutError, ConnectionError) as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                delay = backoff.get_delay()
+                logger.warning(
+                    f"Network error in {operation_name} (attempt {attempt + 1}/{max_attempts}): {type(e).__name__}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"Network operation '{operation_name}' failed after {max_attempts} attempts: {last_error}"
+                )
+        except Exception as e:
+            logger.error(f"Non-network error in {operation_name}: {e}")
+            raise
+    
+    if last_error:
+        raise last_error
 
 # Initialize bot and dispatcher
 bot = Bot(token=API_token)
@@ -3871,33 +3979,33 @@ async def main():
 
             # Check if shutdown was requested during the exception handling
             if stop_event.is_set():
-                logging.info("Shutdown requested during error recovery, exiting...")
+                logger.info("Shutdown requested during error recovery, exiting...")
                 try:
                     if hasattr(bot, 'session') and bot.session:
                         await bot.session.close()
                 except Exception as ce:
-                    logging.debug(f"Error closing session during shutdown: {ce}")
-                logging.info("Bot shutdown complete.")
+                    logger.debug(f"Error closing session during shutdown: {ce}")
+                logger.info("Bot shutdown complete.")
                 return
 
             if is_network_error:
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (2 ** attempt)  # Exponential backoff: 3, 6, 12, 24 seconds
-                    logging.warning(
-                        f"Network error on startup (attempt {attempt + 1}/{max_retries}): {e}\n"
-                        f"Retrying in {wait_time} seconds..."
+                    logger.warning(
+                        f"Network error on startup (attempt {attempt + 1}/{max_retries}): "
+                        f"{error_type}: {e} | Retrying in {wait_time}s..."
                     )
                     await asyncio.sleep(wait_time)
                 else:
-                    logging.error(
+                    logger.error(
                         f"Failed to start polling after {max_retries} attempts due to network issues.\n"
-                        f"Last error: {e}\n"
-                        f"Please check your internet connection and try again."
+                        f"Last error: {error_type}: {e}\n"
+                        f"Possible causes: DNS failure, no internet connection, Telegram API temporarily down"
                     )
                     raise
             else:
                 # Not a network error, re-raise immediately
-                logging.error(f"Failed to start polling (non-network error): {e}")
+                logger.error(f"Failed to start polling (non-network error): {error_type}: {e}", exc_info=True)
                 raise
 
 async def cleanup_bot():
@@ -3905,35 +4013,34 @@ async def cleanup_bot():
     try:
         if hasattr(bot, 'session') and bot.session:
             await bot.session.close()
-            logging.info("Bot session closed.")
+            logger.info("Bot session closed.")
     except Exception as e:
-        logging.error(f"Error closing bot session: {e}")
+        logger.error(f"Error closing bot session: {e}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot stopped.")
+        logger.info("Bot stopped by user.")
         # Ensure cleanup on keyboard interrupt
         asyncio.run(cleanup_bot())
     except Exception as e:
         error_msg = str(e).lower()
+        error_type = type(e).__name__
+        
         if any(keyword in error_msg for keyword in ['dns', 'network', 'connection', 'getaddrinfo', 'cannot connect']):
-            logging.error(
-                f"\n{'='*60}\n"
-                f"FATAL ERROR: Cannot connect to Telegram API\n"
-                f"Error: {e}\n"
-                f"{'='*60}\n"
+            logger.critical(
+                f"\nFATAL NETWORK ERROR: {error_type}\n"
+                f"Details: {e}\n"
                 f"Possible causes:\n"
-                f"  1. No internet connection\n"
-                f"  2. DNS resolution failure\n"
-                f"  3. Firewall blocking Telegram API\n"
-                f"  4. Telegram API temporarily unavailable\n"
-                f"\nPlease check your network connection and try again.\n"
-                f"{'='*60}"
+                f"  • No internet connection\n"
+                f"  • DNS resolution failure\n"
+                f"  • Firewall blocking Telegram API\n"
+                f"  • Telegram API temporarily unavailable\n"
+                f"Please check your network and try again."
             )
         else:
-            logging.error(f"Fatal error: {e}", exc_info=True)
+            logger.critical(f"Fatal error ({error_type}): {e}", exc_info=True)
 
         # Ensure cleanup on fatal error
         try:

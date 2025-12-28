@@ -41,6 +41,16 @@ BOT_START_MAX_RETRIES = int(os.getenv('BOT_START_MAX_RETRIES', '5'))
 BOT_START_RETRY_DELAY = int(os.getenv('BOT_START_RETRY_DELAY', '3'))
 BOT_PREFLIGHT_RETRIES = int(os.getenv('BOT_PREFLIGHT_RETRIES', '3'))
 
+# Network Resilience Configuration
+NETWORK_RETRY_MAX_ATTEMPTS = int(os.getenv('NETWORK_RETRY_MAX_ATTEMPTS', '10'))
+NETWORK_RETRY_INITIAL_DELAY = float(os.getenv('NETWORK_RETRY_INITIAL_DELAY', '1'))
+NETWORK_RETRY_MAX_DELAY = float(os.getenv('NETWORK_RETRY_MAX_DELAY', '60'))
+NETWORK_RETRY_EXPONENTIAL_BASE = float(os.getenv('NETWORK_RETRY_EXPONENTIAL_BASE', '2'))
+
+# Connection timeout settings (seconds)
+BOT_CONNECTION_TIMEOUT = int(os.getenv('BOT_CONNECTION_TIMEOUT', '30'))
+BOT_READ_TIMEOUT = int(os.getenv('BOT_READ_TIMEOUT', '30'))
+
 # Environment type
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
 

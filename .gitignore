@@ -43,3 +43,4 @@ wheels/
 .installed.cfg
 *.egg
 
+usd_price_data.json
