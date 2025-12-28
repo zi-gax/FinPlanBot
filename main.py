@@ -40,6 +40,27 @@ def format_amount(val):
         except Exception:
             return str(val)
 
+
+def card_name(card_source, lang='fa'):
+    """Safe card/source display name."""
+    try:
+        if card_source and len(card_source) > 1 and card_source[1]:
+            return card_source[1]
+    except Exception:
+        pass
+    # Fallback text
+    return get_text('no_card_source', lang)
+
+
+def card_balance(card_source):
+    """Safe card/source balance value."""
+    try:
+        if card_source and len(card_source) > 3 and card_source[3] is not None:
+            return card_source[3]
+    except Exception:
+        pass
+    return 0
+
 # Helper to get user language from callback or message
 def get_user_lang(event):
     """Get user language from callback query or message."""
@@ -548,7 +569,7 @@ async def confirm_delete_card(callback: types.CallbackQuery):
         await callback.answer(get_text('error', lang), show_alert=True)
         return
 
-    name = card_source[1]  # name is at index 1
+    name = card_name(card_source, lang)  # safe name
 
     text = get_text('confirm_delete_card', lang, name=name)
     buttons = [
@@ -570,7 +591,7 @@ async def execute_delete_card(callback: types.CallbackQuery):
         await callback.answer(get_text('error', lang), show_alert=True)
         return
 
-    name = card_source[1]  # name is at index 1
+    name = card_name(card_source, lang)  # safe name
     db.delete_card_source(card_id)
 
     text = get_text('card_source_deleted', lang, name=name)
@@ -1267,7 +1288,7 @@ async def process_card_source(callback: types.CallbackQuery, state: FSMContext):
     currency_display = get_text('toman', lang) if data['currency'] == 'toman' else get_text('dollar', lang)
 
     text = f"{get_text('amount_label', lang)}: {format_amount(amount)} {currency_display}\n"
-    text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n\n"  # card_source[1] is name
+    text += f"{get_text('card_source_label', lang)}: {card_name(card_source, lang)}\n\n"
     if calendar_format == 'jalali':
         text += f"{get_text('enter_date', lang, calendar_format=calendar_display)}\n\n"
         text += "📅 مثال: ۱۴۰۳-۰۶-۱۵ یا ۱۴۰۳/۰۶/۱۵ (شمسی) یا 2024-12-25 (میلادی)" if lang == 'fa' else "📅 Example: 1403-06-15 or 1403/06/15 (Jalali) or 2024-12-25 (Gregorian)"
@@ -1329,7 +1350,7 @@ async def process_date(event, state: FSMContext):
 
     text = f"{get_text('transaction_details', lang)}\n\n"
     text += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
-    text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
+    text += f"{get_text('card_source_label', lang)}: {card_name(card_source, lang)}\n"
     text += f"{get_text('date_label', lang)}: {selected_date}\n\n"
     text += f"{get_text('enter_description', lang)}"
 
@@ -1369,7 +1390,7 @@ async def process_description_finish(event, state: FSMContext, description):
 
     text = f"{get_text('transaction_details', lang)}\n\n"
     text += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
-    text += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
+    text += f"{get_text('card_source_label', lang)}: {card_name(card_source, lang)}\n"
     text += f"{get_text('date_label', lang)}: {data['date']}\n"
     if data.get('description'):
         text += f"{get_text('description_label', lang)}: {data['description']}\n\n"
@@ -1475,7 +1496,7 @@ async def process_category(callback: types.CallbackQuery, state: FSMContext):
     display_date = format_date_for_display(data['date'], settings['calendar_format'], lang)
 
     summary += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
-    summary += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
+    summary += f"{get_text('card_source_label', lang)}: {card_name(card_source, lang)}\n"
     summary += f"{get_text('currency_label', lang)}: {currency_display}\n"
     summary += f"{get_text('type_label', lang)}: {type_text}\n"
     summary += f"{get_text('category_label', lang)}: {data['category']}\n"
@@ -1487,7 +1508,13 @@ async def process_category(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text=get_text('confirm_btn', lang), callback_data="confirm_transaction")],
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
-    await safe_edit_text(callback, summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    sent = await safe_edit_text(callback, summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store confirmation message id in state for later deletion
+    if hasattr(sent, 'message_id'):
+        data = await state.get_data()
+        message_ids = data.get('message_ids', [])
+        message_ids.append(sent.message_id)
+        await state.update_data(message_ids=message_ids)
     # Change state to None so process_category won't catch confirm_transaction callback
     # But keep the data in state for confirm_transaction handler
     await state.set_state(None)
@@ -1496,12 +1523,12 @@ async def process_category(callback: types.CallbackQuery, state: FSMContext):
 # Cancel transaction handler
 @dp.callback_query(F.data == "cancel_transaction")
 async def cancel_transaction(callback: types.CallbackQuery, state: FSMContext):
-    # Delete all tracked messages from the transaction flow
+    # Delete all tracked messages from the transaction flow (including confirmation)
     data = await state.get_data()
     message_ids = data.get('message_ids', [])
     for message_id in message_ids:
         try:
-            await bot.delete_message(chat_id=callback.from_user.id, message_id=message_id)
+            await with_network_retry(bot.delete_message(chat_id=callback.from_user.id, message_id=message_id), "delete_message")
         except Exception as e:
             # Ignore errors if message doesn't exist or can't be deleted
             logging.debug(f"Could not delete transaction message {message_id}: {e}")
@@ -1595,7 +1622,7 @@ async def process_custom_category(message: types.Message, state: FSMContext):
     display_date = format_date_for_display(data['date'], settings['calendar_format'], lang)
 
     summary += f"{get_text('amount_label', lang)}: {format_amount(data['amount'])} {currency_display}\n"
-    summary += f"{get_text('card_source_label', lang)}: {card_source[1]}\n"
+    summary += f"{get_text('card_source_label', lang)}: {card_name(card_source, lang)}\n"
     summary += f"{get_text('currency_label', lang)}: {currency_display}\n"
     summary += f"{get_text('type_label', lang)}: {type_text}\n"
     summary += f"{get_text('category_label', lang)}: {category_name}\n"
@@ -1609,7 +1636,13 @@ async def process_custom_category(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text=get_text('cancel_btn', lang), callback_data="cancel_transaction")]
     ]
 
-    await message.answer(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    sent = await message.answer(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    # Store confirmation message id in state for later deletion
+    if hasattr(sent, 'message_id'):
+        data = await state.get_data()
+        message_ids = data.get('message_ids', [])
+        message_ids.append(sent.message_id)
+        await state.update_data(message_ids=message_ids)
     # Change state to None so process_category won't catch confirm_transaction callback
     await state.set_state(None)
 
@@ -1634,28 +1667,32 @@ async def confirm_transaction(callback: types.CallbackQuery, state: FSMContext):
         data.get('description')
     )
 
-    # Delete the confirmation message
-    try:
-        await bot.delete_message(chat_id=callback.from_user.id, message_id=callback.message.message_id)
-    except Exception:
-        # Ignore if message was already deleted or doesn't exist
-        pass
+    # Delete the confirmation message(s)
+    data = await state.get_data()
+    message_ids = data.get('message_ids', [])
+    for message_id in message_ids:
+        try:
+            await with_network_retry(bot.delete_message(chat_id=callback.from_user.id, message_id=message_id), "delete_message")
+        except Exception:
+            pass
 
     # Get updated card/source balance
     card_source = db.get_card_source(data['card_source_id'])
     currency_display = get_text('toman', lang) if data['currency'] == 'toman' else get_text('dollar', lang)
 
+    bal = card_balance(card_source)
+    name = card_name(card_source, lang)
     if lang == 'en':
         text = (
             f"{get_text('transaction_saved', lang)}\n\n"
-            f"{get_text('balance_updated', lang, balance=card_source[3], currency=currency_display)}\n\n"
-            f"💰 {card_source[1]} balance: {format_amount(card_source[3])} {currency_display}"
+            f"{get_text('balance_updated', lang, balance=bal, currency=currency_display)}\n\n"
+            f"💰 {name} balance: {format_amount(bal)} {currency_display}"
         )
     else:
         text = (
             f"{get_text('transaction_saved', lang)}\n\n"
-            f"{get_text('balance_updated', lang, balance=card_source[3], currency=currency_display)}\n\n"
-            f"💰 موجودی {card_source[1]}: {format_amount(card_source[3])} {currency_display}"
+            f"{get_text('balance_updated', lang, balance=bal, currency=currency_display)}\n\n"
+            f"💰 موجودی {name}: {format_amount(bal)} {currency_display}"
         )
     await send_menu_message(callback.from_user.id, text, reply_markup=finance_menu_kb(lang))
 
@@ -3453,16 +3490,25 @@ async def handle_text_ai(message: types.Message, state: FSMContext):
 
             elif action == "add_transaction":
                 # AI-assisted transaction: create a draft and ask follow-up questions only for missing data
-                parsed_amount = result.get("amount")
-                parsed_type = result.get("type")
-                parsed_category = result.get("category")
-                parsed_date = result.get("date") or current_date
-                parsed_note = result.get("note", "")
-                parsed_currency = result.get("currency")
-                parsed_time = result.get("time")
-                parsed_balance = result.get("balance")
-                parsed_party = result.get("party")
-                card_hint = result.get("card_hint")  # last 4 digits if available
+                # Respect parser confidence flags if present
+                confidence = result.get("confidence") or {}
+
+                def trust(key, val):
+                    # If confidence dict explicitly marks field False, treat as missing
+                    if confidence and (key in confidence) and (confidence[key] is False):
+                        return None
+                    return val
+
+                parsed_amount = trust("amount", result.get("amount"))
+                parsed_type = trust("type", result.get("type"))
+                parsed_category = trust("category", result.get("category"))
+                parsed_date = trust("date", result.get("date") or current_date)
+                parsed_note = trust("description", result.get("description", ""))
+                parsed_currency = trust("currency", result.get("currency"))
+                parsed_time = trust("time", result.get("time"))
+                parsed_balance = trust("balance", result.get("balance"))
+                parsed_party = trust("party", result.get("party"))
+                card_hint = trust("card_source", result.get("card_source") or result.get("card_hint"))  # last 4 digits if available
 
                 settings = db.get_user_settings(message.from_user.id)
                 currency = parsed_currency or settings['currency']
